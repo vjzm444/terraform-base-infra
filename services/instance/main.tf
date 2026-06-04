@@ -77,6 +77,73 @@ resource "aws_instance" "k8s_manager_instance" {
 
               curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
               hostnamectl --static set-hostname k8s-public
+
+
+              cat << 'EKS_EOF' > /home/ec2-user/eks-demo-cluster.yaml
+              apiVersion: eksctl.io/v1alpha5
+              kind: ClusterConfig
+              metadata:
+                name: eks-demo
+                region: ap-northeast-2
+                version: "1.30"
+              vpc:
+                id: "${aws_vpc.lz_vpc.id}"
+                subnets:
+                  private:
+                    ap-northeast-2a: { id: "${aws_subnet.private_subnet.id}" }
+                    ap-northeast-2c: { id: "${aws_subnet.private_subnet2.id}" }
+                  public:
+                    ap-northeast-2a: { id: "${aws_subnet.public_subnet.id}" }
+                    ap-northeast-2c: { id: "${aws_subnet.public_subnet2.id}" }
+              managedNodeGroups:
+                - name: node-group
+                  instanceType: t3.medium
+                  desiredCapacity: 2
+                  privateNetworking: true
+              EKS_EOF
+
+
+
+              cat << 'APP_EOF' > /home/ec2-user/backend-app.yaml
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: flask-backend
+              spec:
+                replicas: 2
+                selector:
+                  matchLabels:
+                    app: flask-backend
+                template:
+                  metadata:
+                    labels:
+                      app: flask-backend
+                  spec:
+                    containers:
+                    - name: nginx
+                      image: nginx:alpine
+                      ports:
+                      - containerPort: 80
+              ---
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: flask-backend-service
+                annotations:
+                  service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+                  service.beta.kubernetes.io/aws-load-balancer-type: "external"
+                  service.beta.kubernetes.io/aws-load-balancer-subnets: "${aws_subnet.public_subnet.id}, ${aws_subnet.public_subnet2.id}"
+              spec:
+                type: LoadBalancer
+                selector:
+                  app: flask-backend
+                ports:
+                  - port: 80
+                    targetPort: 80
+              APP_EOF
+
+              chown ec2-user:ec2-user /home/ec2-user/eks-demo-cluster.yaml /home/ec2-user/backend-app.yaml
+              
               EOF
 
   tags = { Name = "K8s-Manager-EC2" }
