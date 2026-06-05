@@ -191,26 +191,6 @@ resource "aws_instance" "nat_bastion_instance" {
 
 
 
-# # 4.인스턴스 private 백엔드 테스트용 (TODO: 쿠버네티스에서 알아서 생성할것임)
-# resource "aws_instance" "private_Backend_test" {
-#   ami           = "ami-0d4c056a16f3ae150"
-#   instance_type = "t3.micro"
-#   subnet_id     = aws_subnet.private_subnet.id
-#   vpc_security_group_ids = [aws_security_group.private_sg.id]
-#   key_name      = var.key_name
-
-#   user_data = <<-EOF
-#               #!/bin/bash
-#               hostnamectl --static set-hostname Seoul-privates
-
-#               dnf install -y httpd
-#               echo "Hello, World Server Port is ${var.server_port}" > /var/www/html/index.html
-#               systemctl enable --now httpd
-#               EOF
-
-#   tags          = { Name = "Private-Backend-Test-EC2" }
-# }
-
 
 # 2. 라우트 테이블 (인스턴스 생성 후 생성되도록 확실한 의존성 부여)
 resource "aws_route_table" "private_rt" {
@@ -282,46 +262,6 @@ resource "aws_security_group" "nat_sg" {
     cidr_blocks = ["0.0.0.0/0"] 
   }
 }
-
-
-// 2. private 백엔드있는쪽 보안그룹 테스트용(TODO: 쿠버네티스에서 알아서 생성할것임)
-# resource "aws_security_group" "private_sg" {
-  
-#   name   = var.giyeong_sg_name # 변수 적용
-#   vpc_id = aws_vpc.lz_vpc.id
-  
-#   # NAT 인스턴스(10.40.1.0/24)에서 들어오는 모든 트래픽 허용
-#   ingress { 
-#     from_port   = 0 
-#     to_port     = 0 
-#     protocol    = "-1" 
-#     cidr_blocks = ["10.40.0.0/16"]
-#   }
-
-#   # 웹 서버용 80 포트 추가
-#   ingress { 
-#     from_port   = 80 
-#     to_port     = 80 
-#     protocol    = "tcp" 
-#     cidr_blocks = ["0.0.0.0/0"] 
-#   }
-
-#   # SSH 허용
-#   ingress { 
-#     from_port   = 22 
-#     to_port     = 22 
-#     protocol    = "tcp" 
-#     cidr_blocks = ["0.0.0.0/0"] 
-#   }
-  
-#   egress { 
-#     from_port   = 0 
-#     to_port     = 0 
-#     protocol    = "-1" 
-#     cidr_blocks = ["0.0.0.0/0"] 
-#   }
-# }
-
 
 // 쿠버네티스용 보안그룹 (관리 및 트래픽 통신용)
 resource "aws_security_group" "k8s_sg" {

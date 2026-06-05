@@ -20,7 +20,7 @@ variable "k8s_sg_name" {
   default     = "k8s-security-group"
 }
 
-variable "giyeong_sg_name" {
+variable "backend_sg_name" {
   description = "뱀서라이크 백엔드용 private보안그룹(테스트용)"
-  default     = "giyeong-web-sg"
+  default     = "backend_sg_name"
 }
