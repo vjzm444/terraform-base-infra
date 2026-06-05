@@ -131,7 +131,7 @@ resource "aws_instance" "k8s_manager_instance" {
                 name: flask-backend-service
                 annotations:
                   service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-                  service.beta.kubernetes.io/aws-load-balancer-type: "external"
+                  service.beta.kubernetes.io/aws-load-balancer-type: "alb"
                   service.beta.kubernetes.io/aws-load-balancer-subnets: "${aws_subnet.public_subnet.id}, ${aws_subnet.public_subnet2.id}"
               spec:
                 type: LoadBalancer
