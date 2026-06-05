@@ -21,7 +21,15 @@ resource "aws_lb_target_group" "tg" {
   vpc_id   = aws_vpc.lz_vpc.id
 
   health_check {
-    path = "/"
+    enabled             = true
+    path                = "/swagger/index.html" # 이 부분을 이렇게 바꿔줘!
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    matcher             = "200-299"             # 스웨거 페이지가 정상 응답(200)을 주는지 확인
+    interval            = 30                    # 30초마다 체크
+    timeout             = 5                     # 5초 안에 응답 안 오면 실패
+    healthy_threshold   = 3                     # 3번 성공하면 정상
+    unhealthy_threshold = 3                     # 3번 실패하면 비정상
   }
 }
 
