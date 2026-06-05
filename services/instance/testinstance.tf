@@ -3,7 +3,8 @@
 //TODO: 인스턴스
 //          - 쿠버네티스에서 알아서 생성할것이게 임시 테스트용
 
-// 4. 인스턴스 private 백엔드용
+
+// 인스턴스 private 백엔드용
 resource "aws_instance" "private_Backend_test" {
   ami           = "ami-0d4c056a16f3ae150"
   instance_type = "t3.micro"
@@ -15,9 +16,28 @@ resource "aws_instance" "private_Backend_test" {
               #!/bin/bash
               hostnamectl --static set-hostname Seoul-privates
 
-              dnf install -y httpd
-              echo "Hello, World Server Port is ${var.server_port}" > /var/www/html/index.html
-              systemctl enable --now httpd
+              # 1. 도커 설치 및 실행
+              dnf install -y docker
+              systemctl enable --now docker
+              usermod -aG docker ec2-user
+
+              # 2. 도커 컴포즈 설치
+              mkdir -p /usr/libexec/docker/cli-plugins/
+              curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/libexec/docker/cli-plugins/docker-compose
+              chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+              ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/bin/docker-compose
+
+              # git 설치(브런치 여기서 설정!!)
+              dnf install -y git
+              git clone -b team --single-branch https://github.com/rlduddl/Vamserlike-backend.git /home/ec2-user/backend
+              
+              cd /home/ec2-user/backend/src/Vamserlike.Api
+              
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+              sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+              docker-compose up -d --build
+
               EOF
 
   tags          = { Name = "Private-Backend-Test-EC2" }
@@ -37,6 +57,13 @@ resource "aws_security_group" "private_sg" {
     protocol        = "tcp" 
     security_groups = [aws_security_group.alb_sg.id] 
   }
+
+  # ingress { 
+  #   from_port       = 80 
+  #   to_port         = 80 
+  #   protocol        = "tcp" 
+  #   cidr_blocks = ["10.40.0.0/16"]
+  # }
 
   # NAT 인스턴스에서 들어오는 모든 트래픽 허용
   ingress { 
