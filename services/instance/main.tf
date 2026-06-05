@@ -67,7 +67,8 @@ resource "aws_instance" "k8s_manager_instance" {
   user_data = <<-EOF
               #!/bin/bash
               set -ex
-              
+
+              # 쿠버네티스 라이브러리 설치
               sudo dnf install -y unzip jq bash-completion
               curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl
               chmod +x ./kubectl
@@ -75,10 +76,25 @@ resource "aws_instance" "k8s_manager_instance" {
               curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
               sudo mv /tmp/eksctl /usr/local/bin
 
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              # 기본리젼 환경값 셋팅
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              export AWS_REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+              
+              
+              echo "export AWS_REGION=$${AWS_REGION}" | tee -a ~/.bash_profile
+              aws configure set default.region $${AWS_REGION}
+              
+              
               hostnamectl --static set-hostname k8s-public
+              
+              # 헬름 라이브러리 미리 설치
+              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              helm repo add eks https://aws.github.io/eks-charts
+              helm repo update
 
 
+              # 1. kubectl에서 필요한 임시파일 2개생성.
+              
               cat << 'EKS_EOF' > /home/ec2-user/eks-demo-cluster.yaml
               apiVersion: eksctl.io/v1alpha5
               kind: ClusterConfig
@@ -131,7 +147,7 @@ resource "aws_instance" "k8s_manager_instance" {
                 name: flask-backend-service
                 annotations:
                   service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-                  service.beta.kubernetes.io/aws-load-balancer-type: "external"
+                  service.beta.kubernetes.io/aws-load-balancer-type: "alb"
                   service.beta.kubernetes.io/aws-load-balancer-subnets: "${aws_subnet.public_subnet.id}, ${aws_subnet.public_subnet2.id}"
               spec:
                 type: LoadBalancer
@@ -152,7 +168,7 @@ resource "aws_instance" "k8s_manager_instance" {
 
 
 
-# 3. NAT 인스턴스 (TestInstance2-Public-EC2 역할)
+# 3. NAT 인스턴스 (배스천 인스턴스)
 resource "aws_instance" "nat_bastion_instance" {
   ami           = "ami-0d4c056a16f3ae150"
   instance_type = "t3.micro"
@@ -188,8 +204,6 @@ resource "aws_instance" "nat_bastion_instance" {
 
   tags = { Name = "NAT-Instance-EC2" }
 }
-
-
 
 
 # 2. 라우트 테이블 (인스턴스 생성 후 생성되도록 확실한 의존성 부여)
