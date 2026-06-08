@@ -8,6 +8,10 @@
 resource "aws_instance" "private_Backend_test" {
   ami           = "ami-0d4c056a16f3ae150"
   instance_type = "t3.micro"
+
+  iam_instance_profile = aws_iam_instance_profile.backend_profile.name
+
+  
   subnet_id     = aws_subnet.private_subnet.id
   vpc_security_group_ids = [aws_security_group.private_sg.id]
   key_name      = var.key_name
