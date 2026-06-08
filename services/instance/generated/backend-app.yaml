@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vamserlike
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vamserlike-backend
+  namespace: vamserlike
+  labels:
+    app: vamserlike-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vamserlike-backend
+  template:
+    metadata:
+      labels:
+        app: vamserlike-backend
+    spec:
+      containers:
+        - name: vamserlike-backend
+          image: 236052538859.dkr.ecr.ap-northeast-2.amazonaws.com/vamserlike-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+            - name: MySql__ConnectionString
+              value: "Server=CHANGE_ME;Port=3306;Database=vamserlike;User=CHANGE_ME;Password=CHANGE_ME;SslMode=Preferred;AllowPublicKeyRetrieval=True;"
+          readinessProbe:
+            httpGet:
+              path: /api/Health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/Health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vamserlike-backend-service
+  namespace: vamserlike
+  labels:
+    app: vamserlike-backend
+spec:
+  type: NodePort
+  selector:
+    app: vamserlike-backend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vamserlike-backend-ingress
+  namespace: vamserlike
+  labels:
+    app: vamserlike-backend
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /api/Health
+    alb.ingress.kubernetes.io/success-codes: "200-399"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/subnets: "subnet-02dba205b2941ae93,subnet-017e78922b8afe533"
+    alb.ingress.kubernetes.io/group.name: vamserlike-backend
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vamserlike-backend-service
+                port:
+                  number: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vamserlike-backend-hpa
+  namespace: vamserlike
+  labels:
+    app: vamserlike-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vamserlike-backend
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
