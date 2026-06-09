@@ -10,6 +10,9 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+# Windows CRLF 방지
+sed -i 's/\r$//' "$ENV_FILE" 2>/dev/null || true
+
 source "$ENV_FILE"
 
 AWS_REGION="${AWS_REGION:-ap-northeast-2}"
@@ -17,12 +20,18 @@ CLUSTER_NAME="${CLUSTER_NAME:-eks-demo}"
 NODEGROUP_NAME="${NODEGROUP_NAME:-vamserlike-node-group}"
 VPC_CIDR="${VPC_CIDR:-10.40.0.0/16}"
 ECR_REPOSITORY="${ECR_REPOSITORY:-vamserlike-backend}"
+ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-vamserlike-backend}"
+MANIFEST_PATH="${MANIFEST_PATH:-overlays/dev}"
 
 echo "===== Vamserlike Bootstrap Start ====="
 echo "AWS_REGION=${AWS_REGION}"
 echo "CLUSTER_NAME=${CLUSTER_NAME}"
 echo "NODEGROUP_NAME=${NODEGROUP_NAME}"
 echo "VPC_CIDR=${VPC_CIDR}"
+echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
+echo "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
+echo "MANIFEST_REPO_URL=${MANIFEST_REPO_URL}"
+echo "MANIFEST_PATH=${MANIFEST_PATH}"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 echo "ACCOUNT_ID=${ACCOUNT_ID}"
@@ -37,6 +46,25 @@ echo "===== Check Required Commands ====="
 for cmd in aws eksctl kubectl helm jq curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "[ERROR] required command not found: $cmd"
+    exit 1
+  fi
+done
+
+echo "===== Check Required Env Values ====="
+REQUIRED_VARS=(
+  PUBLIC_SUBNET_2A_NAME
+  PUBLIC_SUBNET_2C_NAME
+  PRIVATE_SUBNET_2A_NAME
+  PRIVATE_SUBNET_2C_NAME
+  MYSQL_CONNECTION_STRING
+  MANIFEST_REPO_URL
+  MANIFEST_PATH
+  ARGOCD_APP_NAME
+)
+
+for var in "${REQUIRED_VARS[@]}"; do
+  if [ -z "${!var:-}" ]; then
+    echo "[ERROR] required env value is empty: ${var}"
     exit 1
   fi
 done
@@ -161,6 +189,7 @@ eksctl utils associate-iam-oidc-provider \
 
 echo "===== Install AWS Load Balancer Controller ====="
 cd "${HOME}"
+
 curl -sS -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.14.1/docs/install/iam_policy.json
 
 POLICY_ARN="$(aws iam list-policies \
@@ -197,7 +226,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --set region="${AWS_REGION}" \
   --set vpcId="${VPC_ID}"
 
-kubectl rollout status deployment/aws-load-balancer-controller -n kube-system
+kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=300s
 
 echo "===== Create DB Secret ====="
 kubectl create namespace vamserlike --dry-run=client -o yaml | kubectl apply -f -
@@ -210,13 +239,39 @@ kubectl create secret generic vamserlike-db-secret \
 echo "===== Install Argo CD ====="
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl apply -n argocd \
+kubectl apply \
+  --server-side \
+  --force-conflicts \
+  -n argocd \
   -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-kubectl rollout status deployment/argocd-server -n argocd --timeout=300s || true
+echo "===== Wait for Argo CD Rollout ====="
+kubectl rollout status deployment/argocd-server -n argocd --timeout=300s
+kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=300s
+kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=300s
 
+echo "===== Expose Argo CD Server with LoadBalancer ====="
 kubectl patch svc argocd-server -n argocd \
   -p '{"spec": {"type": "LoadBalancer"}}'
+
+echo "===== Wait for Argo CD LoadBalancer ====="
+ARGOCD_LB=""
+
+for i in {1..40}; do
+  ARGOCD_LB="$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+
+  if [ -n "$ARGOCD_LB" ]; then
+    echo "Argo CD LB: ${ARGOCD_LB}"
+    break
+  fi
+
+  echo "Waiting for Argo CD LoadBalancer... ${i}/40"
+  sleep 15
+done
+
+if [ -z "$ARGOCD_LB" ]; then
+  echo "[WARN] Argo CD LoadBalancer hostname is still empty."
+fi
 
 echo "===== Create Argo CD Application ====="
 cat > "${HOME}/vamserlike-backend-argocd-app.yaml" <<EOF
@@ -247,15 +302,90 @@ EOF
 
 kubectl apply -f "${HOME}/vamserlike-backend-argocd-app.yaml"
 
+echo "===== Wait for Backend Pods ====="
+for i in {1..40}; do
+  READY_PODS="$(kubectl get pods -n vamserlike -l app=vamserlike-backend --no-headers 2>/dev/null | awk '$2 ~ /^1\/1/ && $3 == "Running" {count++} END {print count+0}')"
+
+  if [ "$READY_PODS" -ge 1 ]; then
+    echo "Backend running pods: ${READY_PODS}"
+    break
+  fi
+
+  echo "Waiting for backend pods... ${i}/40"
+  kubectl get pods -n vamserlike || true
+  sleep 15
+done
+
+echo "===== Wait for Backend Ingress ALB ====="
+BACKEND_ALB=""
+
+for i in {1..40}; do
+  BACKEND_ALB="$(kubectl get ingress vamserlike-backend-ingress -n vamserlike -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+
+  if [ -n "$BACKEND_ALB" ]; then
+    echo "Backend ALB: ${BACKEND_ALB}"
+    break
+  fi
+
+  echo "Waiting for backend ALB... ${i}/40"
+  kubectl get ingress -n vamserlike || true
+  sleep 15
+done
+
+if [ -z "$BACKEND_ALB" ]; then
+  echo "[ERROR] Backend ALB hostname is empty."
+  echo "Check:"
+  echo "kubectl describe ingress vamserlike-backend-ingress -n vamserlike"
+  echo "kubectl logs -n kube-system deployment/aws-load-balancer-controller --tail=100"
+  exit 1
+fi
+
+echo "===== Wait for Backend ALB DNS ====="
+for i in {1..40}; do
+  if getent hosts "$BACKEND_ALB" >/dev/null 2>&1; then
+    echo "Backend ALB DNS resolved."
+    getent hosts "$BACKEND_ALB"
+    break
+  fi
+
+  echo "Waiting for backend ALB DNS... ${i}/40"
+  sleep 15
+done
+
+echo "===== Check Backend Health ====="
+HEALTH_OK="false"
+
+for i in {1..20}; do
+  echo "Health check try ${i}/20"
+  if curl -fsS "http://${BACKEND_ALB}/api/Health"; then
+    echo
+    HEALTH_OK="true"
+    break
+  fi
+
+  echo
+  sleep 15
+done
+
+if [ "$HEALTH_OK" != "true" ]; then
+  echo "[ERROR] Backend health check failed."
+  echo "Check target health and pod logs:"
+  echo "kubectl get pods -n vamserlike"
+  echo "kubectl logs -n vamserlike -l app=vamserlike-backend --tail=100"
+  exit 1
+fi
+
 echo "===== Output ====="
-ARGOCD_LB="$(kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
 ARGOCD_PW="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
 
-echo "Argo CD URL: https://${ARGOCD_LB}"
+echo "Argo CD URL: http://${ARGOCD_LB}"
 echo "Argo CD ID : admin"
 echo "Argo CD PW : ${ARGOCD_PW}"
+echo "Backend ALB: http://${BACKEND_ALB}"
+echo "Backend Health: http://${BACKEND_ALB}/api/Health"
 
-echo "Wait a few minutes, then check:"
+echo ""
+echo "Check commands:"
 echo "kubectl get applications -n argocd"
 echo "kubectl get pods -n vamserlike"
 echo "kubectl get ingress -n vamserlike"
