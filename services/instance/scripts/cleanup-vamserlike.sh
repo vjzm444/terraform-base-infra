@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 AWS_REGION="${AWS_REGION:-ap-northeast-2}"
