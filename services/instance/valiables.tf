@@ -11,13 +11,6 @@ variable "github_connection_arn" {
   default     = "arn:aws:codeconnections:ap-northeast-2:899255965373:connection/a9ad0cc9-d9bc-4eed-a91c-f8c9152cca92"
 }
 
-#반드시 바꿔야함.고유값으로(버킷만들때 사용)
-variable "bucket_prefix" {
-  description = "버킷 이름 앞에 붙을 접두사 (예: vjzm44)"
-  type        = string
-  default     = "vjzm44" # 기본값 설정
-}
-
 variable "server_port" {
   description = "The port the web server will listen on"
   type        = number

@@ -67,7 +67,7 @@ resource "aws_codepipeline" "pipeline" {
       input_artifacts = ["SourceArtifact"]
       version         = "1"
       configuration = {
-        BucketName = format("%s-unity-vamserlike", var.bucket_prefix)
+        BucketName = "${local.account_id}-unity-vamserlike"
         Extract    = "true" 
       }
     }
