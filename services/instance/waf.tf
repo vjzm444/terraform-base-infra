@@ -72,176 +72,6 @@ resource "aws_wafv2_web_acl" "backend" {
     }
   }
 
-  # ----- Case 5. 대용량 페이로드 차단 (요청 바디 8KB 초과) -----
-  rule {
-    name     = "case5-body-size-limit"
-    priority = 1
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case5-body-size-limit"
-          }
-        }
-      }
-    }
-    statement {
-      size_constraint_statement {
-        field_to_match {
-          body {
-            # 8KB 초과로 검사 한도를 넘는 바디는 매치(=차단) 처리
-            oversize_handling = "MATCH"
-          }
-        }
-        comparison_operator = "GT"
-        size                = 8192
-        text_transformation {
-          priority = 0
-          type     = "NONE"
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case5-body-size-limit"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 8. 자동화 도구/스캐너 User-Agent 차단 -----
-  rule {
-    name     = "case8-block-tool-user-agents"
-    priority = 2
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case8-user-agent"
-          }
-        }
-      }
-    }
-    statement {
-      or_statement {
-        dynamic "statement" {
-          for_each = ["sqlmap", "nikto", "zgrab", "selenium", "puppeteer"]
-          content {
-            byte_match_statement {
-              field_to_match {
-                single_header {
-                  name = "user-agent"
-                }
-              }
-              positional_constraint = "CONTAINS"
-              search_string         = statement.value
-              text_transformation {
-                priority = 0
-                type     = "LOWERCASE"
-              }
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case8-block-tool-user-agents"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 10b. Log4Shell(JNDI) 명시적 차단 -----
-  # 관리형 KnownBadInputs가 취약 경로(ExploitablePaths)는 잡지만 바디/헤더의
-  # JNDI 문자열을 놓치는 경우를 대비한 명시적 규칙. 커스텀 헤더로 식별도 가능하다.
-  rule {
-    name     = "case10-log4j-jndi"
-    priority = 3
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case10-known-bad-inputs"
-          }
-        }
-      }
-    }
-    statement {
-      or_statement {
-        statement {
-          byte_match_statement {
-            field_to_match {
-              body {
-                oversize_handling = "MATCH"
-              }
-            }
-            positional_constraint = "CONTAINS"
-            search_string         = "jndi:"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-        statement {
-          byte_match_statement {
-            field_to_match {
-              all_query_arguments {}
-            }
-            positional_constraint = "CONTAINS"
-            search_string         = "jndi:"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-        statement {
-          byte_match_statement {
-            field_to_match {
-              uri_path {}
-            }
-            positional_constraint = "CONTAINS"
-            search_string         = "jndi:"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-        statement {
-          byte_match_statement {
-            field_to_match {
-              headers {
-                match_pattern {
-                  all {}
-                }
-                match_scope       = "VALUE"
-                oversize_handling = "MATCH"
-              }
-            }
-            positional_constraint = "CONTAINS"
-            search_string         = "jndi:"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case10-log4j-jndi"
-      sampled_requests_enabled   = true
-    }
-  }
-
   # ----- Case 2-1. 랭킹 조회 속도 제한 -----
   rule {
     name     = "case2-rate-ranking"
@@ -368,6 +198,89 @@ resource "aws_wafv2_web_acl" "backend" {
     }
   }
 
+  # ----- Case 4. SQLi/XSS 등 알려진 웹 공격 패턴 (CommonRuleSet) -----
+  # 관리형 룰셋은 그룹 내부에서 차단하므로 x-waf-rule 헤더가 없다.
+  # 참고: 이 룰셋의 SizeRestrictions_BODY 가 8KB 초과 바디도 함께 차단하므로
+  #       Case 5와 일부 중복되나, 명세 충실성을 위해 두 규칙을 모두 둔다.
+  rule {
+    name     = "case4-aws-common-ruleset"
+    priority = 30
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case4-aws-common-ruleset"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 4b. SQL 인젝션 차단 (SQLiRuleSet) -----
+  # CommonRuleSet에는 SQLi 탐지가 없어(XSS 등만 포함) SQL 인젝션이 통과한다.
+  # SQLi 전용 관리형 룰셋을 추가해 SQL 인젝션 패턴을 차단한다.
+  rule {
+    name     = "case4-aws-sqli-ruleset"
+    priority = 33
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesSQLiRuleSet"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case4-aws-sqli-ruleset"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 5. 대용량 페이로드 차단 (요청 바디 8KB 초과) -----
+  rule {
+    name     = "case5-body-size-limit"
+    priority = 1
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case5-body-size-limit"
+          }
+        }
+      }
+    }
+    statement {
+      size_constraint_statement {
+        field_to_match {
+          body {
+            # 8KB 초과로 검사 한도를 넘는 바디는 매치(=차단) 처리
+            oversize_handling = "MATCH"
+          }
+        }
+        comparison_operator = "GT"
+        size                = 8192
+        text_transformation {
+          priority = 0
+          type     = "NONE"
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case5-body-size-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
   # ----- Case 6. 로그인 속도 제한 -----
   rule {
     name     = "case6-rate-login"
@@ -452,45 +365,46 @@ resource "aws_wafv2_web_acl" "backend" {
     }
   }
 
-  # ----- Case 4. SQLi/XSS 등 알려진 웹 공격 패턴 (CommonRuleSet) -----
-  # 관리형 룰셋은 그룹 내부에서 차단하므로 x-waf-rule 헤더가 없다.
-  # 참고: 이 룰셋의 SizeRestrictions_BODY 가 8KB 초과 바디도 함께 차단하므로
-  #       Case 5와 일부 중복되나, 명세 충실성을 위해 두 규칙을 모두 둔다.
+  # ----- Case 8. 자동화 도구/스캐너 User-Agent 차단 -----
   rule {
-    name     = "case4-aws-common-ruleset"
-    priority = 30
-    override_action {
-      none {}
+    name     = "case8-block-tool-user-agents"
+    priority = 2
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case8-user-agent"
+          }
+        }
+      }
     }
     statement {
-      managed_rule_group_statement {
-        vendor_name = "AWS"
-        name        = "AWSManagedRulesCommonRuleSet"
+      or_statement {
+        dynamic "statement" {
+          for_each = ["sqlmap", "nikto", "zgrab", "selenium", "puppeteer"]
+          content {
+            byte_match_statement {
+              field_to_match {
+                single_header {
+                  name = "user-agent"
+                }
+              }
+              positional_constraint = "CONTAINS"
+              search_string         = statement.value
+              text_transformation {
+                priority = 0
+                type     = "LOWERCASE"
+              }
+            }
+          }
+        }
       }
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "case4-aws-common-ruleset"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 10. 알려진 취약점 공격 패턴 (KnownBadInputs) -----
-  rule {
-    name     = "case10-aws-known-bad-inputs"
-    priority = 31
-    override_action {
-      none {}
-    }
-    statement {
-      managed_rule_group_statement {
-        vendor_name = "AWS"
-        name        = "AWSManagedRulesKnownBadInputsRuleSet"
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case10-aws-known-bad-inputs"
+      metric_name                = "case8-block-tool-user-agents"
       sampled_requests_enabled   = true
     }
   }
@@ -515,24 +429,110 @@ resource "aws_wafv2_web_acl" "backend" {
     }
   }
 
-  # ----- Case 4b. SQL 인젝션 차단 (SQLiRuleSet) -----
-  # CommonRuleSet에는 SQLi 탐지가 없어(XSS 등만 포함) SQL 인젝션이 통과한다.
-  # SQLi 전용 관리형 룰셋을 추가해 SQL 인젝션 패턴을 차단한다.
+  # ----- Case 10. 알려진 취약점 공격 패턴 (KnownBadInputs) -----
   rule {
-    name     = "case4-aws-sqli-ruleset"
-    priority = 33
+    name     = "case10-aws-known-bad-inputs"
+    priority = 31
     override_action {
       none {}
     }
     statement {
       managed_rule_group_statement {
         vendor_name = "AWS"
-        name        = "AWSManagedRulesSQLiRuleSet"
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
       }
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "case4-aws-sqli-ruleset"
+      metric_name                = "case10-aws-known-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 10b. Log4Shell(JNDI) 명시적 차단 -----
+  # 관리형 KnownBadInputs가 취약 경로(ExploitablePaths)는 잡지만 바디/헤더의
+  # JNDI 문자열을 놓치는 경우를 대비한 명시적 규칙. 커스텀 헤더로 식별도 가능하다.
+  rule {
+    name     = "case10-log4j-jndi"
+    priority = 3
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case10-known-bad-inputs"
+          }
+        }
+      }
+    }
+    statement {
+      or_statement {
+        statement {
+          byte_match_statement {
+            field_to_match {
+              body {
+                oversize_handling = "MATCH"
+              }
+            }
+            positional_constraint = "CONTAINS"
+            search_string         = "jndi:"
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+        statement {
+          byte_match_statement {
+            field_to_match {
+              all_query_arguments {}
+            }
+            positional_constraint = "CONTAINS"
+            search_string         = "jndi:"
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+        statement {
+          byte_match_statement {
+            field_to_match {
+              uri_path {}
+            }
+            positional_constraint = "CONTAINS"
+            search_string         = "jndi:"
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+        statement {
+          byte_match_statement {
+            field_to_match {
+              headers {
+                match_pattern {
+                  all {}
+                }
+                match_scope       = "VALUE"
+                oversize_handling = "MATCH"
+              }
+            }
+            positional_constraint = "CONTAINS"
+            search_string         = "jndi:"
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case10-log4j-jndi"
       sampled_requests_enabled   = true
     }
   }
