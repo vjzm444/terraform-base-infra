@@ -1,0 +1,181 @@
+
+# 전제조건
+#   - terraform apply 이후 
+#   - ALB를 통해 /ec2/vamserlike-backend(클라우드워치)에 로그가 들어오는 상태에서 실행해야함!
+#
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Create Firehose with IAM Role and CloudWatch Processing'
+
+Parameters:
+  TargetBucketName:
+    Type: String
+    Default: "vamserlike-backend-logs"
+
+Mappings:
+  LogConfig:
+    Path:
+      # 고정된 경로 조각들만 매핑에 저장
+      BasePrefix: "raw/apache/access/"
+      PartitionTemplate: "$${year}/$${month}/$${day}/"
+
+
+Resources:
+  # Firehose
+  ApacheLogDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+
+    Properties:
+      DeliveryStreamName: apache-access-cwl-to-s3-v2
+      DeliveryStreamType: DirectPut
+
+      ExtendedS3DestinationConfiguration:
+        RoleARN: !GetAtt FirehoseDeliveryRole.Arn
+        BucketARN: !Sub "arn:aws:s3:::${AWS::AccountId}-${TargetBucketName}"
+        Prefix: "raw/apache/access/!{timestamp:yyyy}/!{timestamp:MM}/!{timestamp:dd}/"
+        ErrorOutputPrefix: "errors/!{firehose:error-output-type}/!{timestamp:yyyy}/!{timestamp:MM}/!{timestamp:dd}/"
+        CompressionFormat: UNCOMPRESSED
+    
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            # 1. 압축 먼저 풀고
+            - Type: "Decompression"
+              Parameters:
+                - ParameterName: "CompressionFormat"
+                  ParameterValue: "GZIP"
+            # 2. 그다음에 메시지 추출
+            - Type: "CloudWatchLogProcessing"
+              Parameters:
+                - ParameterName: "DataMessageExtraction"
+                  ParameterValue: "True"
+        BufferingHints:
+          IntervalInSeconds: 300
+          SizeInMBs: 5
+
+
+  # Firehose용 IAM Role
+  FirehoseDeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${AWS::AccountId}-${TargetBucketName}"
+                  - !Sub "arn:aws:s3:::${AWS::AccountId}-${TargetBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource: "*"
+
+# 5. 구독 필터용 IAM Role (형이 준 JSON 정책 적용)
+  LogSubscriptionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: logs.ap-northeast-2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowPutToSpecificFirehose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: "firehose:PutRecord"
+                Resource: !GetAtt ApacheLogDeliveryStream.Arn
+
+# 5. 구독 필터
+  ApacheLogSubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      LogGroupName: "/ec2/vamserlike-backend"
+      FilterPattern: "EventName"
+      DestinationArn: !GetAtt ApacheLogDeliveryStream.Arn
+      RoleArn: !GetAtt LogSubscriptionRole.Arn
+      Distribution: "Random"
+
+
+  # 5. 아테나에서 사용할 Glue 데이터베이스
+  AthenaDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: "web_logs_db"
+
+  # 6. 아테나에서 사용할 Glue 테이블
+  ApacheAccessLogsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AthenaDatabase
+      TableInput:
+        Name: "apache_access_logs_pp"
+        TableType: "EXTERNAL_TABLE"
+        # Parameters 필드는 딱 하나여야 해!
+        Parameters:
+          "projection.enabled": "true"
+          "projection.year.type": "integer"
+          "projection.year.range": "2026,2035"
+          "projection.month.type": "integer"
+          "projection.month.range": "1,12"
+          "projection.month.digits": "2"
+          "projection.day.type": "integer"
+          "projection.day.range": "1,31"
+          "projection.day.digits": "2"
+          "storage.location.template": !Join 
+            - ""
+            - - "s3://"
+              - !Sub "${AWS::AccountId}-${TargetBucketName}"
+              - "/"
+              - !FindInMap [LogConfig, Path, BasePrefix]
+              - "${year}/${month}/${day}/"
+        StorageDescriptor:
+          Columns:
+            - Name: "full_log"
+              Type: "string"
+          Location: !Join 
+            - ""
+            - - "s3://"
+              - !Sub "${AWS::AccountId}-${TargetBucketName}"
+              - "/"
+              - !FindInMap [LogConfig, Path, BasePrefix]
+          InputFormat: "org.apache.hadoop.mapred.TextInputFormat"
+          OutputFormat: "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+          SerdeInfo:
+            SerializationLibrary: "org.apache.hadoop.hive.serde2.RegexSerDe"
+            Parameters:
+              "input.regex": "(?s)(.*)"
+        PartitionKeys:
+          - Name: "year"
+            Type: "int"
+          - Name: "month"
+            Type: "int"
+          - Name: "day"
+            Type: "int"
+
+Outputs:
+  FirehoseArn:
+    Value: !GetAtt ApacheLogDeliveryStream.Arn

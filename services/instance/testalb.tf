@@ -22,7 +22,7 @@ resource "aws_lb_target_group" "tg" {
 
   health_check {
     enabled             = true
-    path                = "/swagger/index.html" # 이 부분을 이렇게 바꿔줘!
+    path                = "/api/healths" # 이 부분을 이렇게 바꿔줘!
     port                = "traffic-port"
     protocol            = "HTTP"
     matcher             = "200-299"             # 스웨거 페이지가 정상 응답(200)을 주는지 확인

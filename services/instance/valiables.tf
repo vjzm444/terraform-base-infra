@@ -1,7 +1,7 @@
 #반드시 바꿔야함.키값
 variable "key_name" {
   description = "EC2 인스턴스에 사용할 키 페어 이름"
-  default     = "seoul_thdguswn0005"
+  default     = "thdguswn0005_seoul_v2"
 }
 
 #반드시 바꿔야함. 파이프라인 -> 연결 arn변경(vamserlike-unity에 초대받은 Github계정이 연결되어있어야함.)

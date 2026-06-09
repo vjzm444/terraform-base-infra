@@ -1,13 +1,28 @@
+# 현재 계정 정보를 가져옴
+data "aws_caller_identity" "current" {}
+
+# 계정 ID를 활용해 고유한 접두사 생성 (하드코딩 제거)
+locals {
+  account_id = data.aws_caller_identity.current.account_id
+}
+
+# 1. 아테나로 보낼 s3용(CloudFormation에서 사용예정)
+resource "aws_s3_bucket" "vamserlike-logs-bucket" {
+  # 예: "vjzm44-vamserlike-backend-logs"
+  bucket = "${local.account_id}-vamserlike-backend-logs"
+  force_destroy = true
+}
+
 # 1. 파이프라인용 아티팩트 버킷 생성 (이름을 고정해버리자)
 resource "aws_s3_bucket" "artifact_bucket" {
   # 예: "vjzm44-artifacts"
-  bucket        = format("%s-artifacts", var.bucket_prefix)
+  bucket        = "${local.account_id}-pipeline-artifacts"
   force_destroy = true
 }
 
 resource "aws_s3_bucket" "deploy_bucket" {
   # 예: "vjzm44" + "-" + "vamserlike" = "vjzm44-vamserlike"
-  bucket        = format("%s-vamserlike", var.bucket_prefix)
+  bucket        = "${local.account_id}-unity-vamserlike"
   force_destroy = true
 }
 
@@ -52,7 +67,7 @@ resource "aws_codepipeline" "pipeline" {
       input_artifacts = ["SourceArtifact"]
       version         = "1"
       configuration = {
-        BucketName = format("%s-vamserlike", var.bucket_prefix)
+        BucketName = format("%s-unity-vamserlike", var.bucket_prefix)
         Extract    = "true" 
       }
     }
