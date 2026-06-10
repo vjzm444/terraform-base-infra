@@ -1,5 +1,5 @@
 provider "aws" {
-  region = "ap-northeast-2"
+  region  = "ap-northeast-2"
   version = ">= 5.50, < 6.0"
 }
 
@@ -57,17 +57,20 @@ resource "aws_route_table" "public_rt" {
 
 # 쿠버네티스 실행전용 인스턴스
 resource "aws_instance" "k8s_manager_instance" {
-  ami           = "ami-0d4c056a16f3ae150"
-  instance_type = "t3.medium"
-  subnet_id     = aws_subnet.public_subnet2.id 
-  vpc_security_group_ids = [aws_security_group.k8s_sg.id] 
-  key_name      = var.key_name
-  
-  
+  ami                    = "ami-0d4c056a16f3ae150"
+  instance_type          = "t3.medium"
+  subnet_id              = aws_subnet.public_subnet2.id
+  vpc_security_group_ids = [aws_security_group.k8s_sg.id]
+  key_name               = var.key_name
+
+
   user_data = <<-EOF
               #!/bin/bash
               set -ex
-              
+
+              # 쿠버네티스 라이브러리 설치
+              # git 추가: K8s Manager EC2에서 terraform-base-infra repo clone/pull 하기 위함
+              sudo dnf install -y unzip jq bash-completion git
               sudo dnf install -y unzip jq bash-completion
               curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl
               chmod +x ./kubectl
@@ -75,10 +78,25 @@ resource "aws_instance" "k8s_manager_instance" {
               curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
               sudo mv /tmp/eksctl /usr/local/bin
 
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              # 기본리젼 환경값 셋팅
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              export AWS_REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+              
+              
+              echo "export AWS_REGION=$${AWS_REGION}" | tee -a ~/.bash_profile
+              aws configure set default.region $${AWS_REGION}
+              
+              
               hostnamectl --static set-hostname k8s-public
+              
+              # 헬름 라이브러리 미리 설치
+              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              helm repo add eks https://aws.github.io/eks-charts
+              helm repo update
 
 
+              # 1. kubectl에서 필요한 임시파일 2개생성.
+              
               cat << 'EKS_EOF' > /home/ec2-user/eks-demo-cluster.yaml
               apiVersion: eksctl.io/v1alpha5
               kind: ClusterConfig
@@ -152,7 +170,7 @@ resource "aws_instance" "k8s_manager_instance" {
 
 
 
-# 3. NAT 인스턴스 (TestInstance2-Public-EC2 역할)
+# 3. NAT 인스턴스 (배스천 인스턴스)
 resource "aws_instance" "nat_bastion_instance" {
   ami           = "ami-0d4c056a16f3ae150"
   instance_type = "t3.micro"
@@ -190,8 +208,6 @@ resource "aws_instance" "nat_bastion_instance" {
 }
 
 
-
-
 # 2. 라우트 테이블 (인스턴스 생성 후 생성되도록 확실한 의존성 부여)
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.lz_vpc.id
@@ -203,10 +219,10 @@ resource "aws_route_table" "private_rt" {
 resource "aws_route" "private_nat_route" {
   route_table_id         = aws_route_table.private_rt.id
   destination_cidr_block = "0.0.0.0/0"
-  
-  network_interface_id   = aws_instance.nat_bastion_instance.primary_network_interface_id
-  
-  depends_on             = [aws_instance.nat_bastion_instance]
+
+  network_interface_id = aws_instance.nat_bastion_instance.primary_network_interface_id
+
+  depends_on = [aws_instance.nat_bastion_instance]
 }
 
 
@@ -238,28 +254,28 @@ resource "aws_route_table_association" "private_assoc_c" {
 
 // 2. 보안그룹 수정 (숫자형으로 변경)
 resource "aws_security_group" "nat_sg" {
-  name   = var.nat_sg_name  # 변수 적용
+  name   = var.nat_sg_name # 변수 적용
   vpc_id = aws_vpc.lz_vpc.id
-  
-  ingress { 
+
+  ingress {
     from_port   = 0
-    to_port     = 0 
-    protocol    = "-1" 
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["10.40.2.0/24", "10.40.4.0/24"]
   }
-  
-  ingress { 
-    from_port   = 22 
-    to_port     = 22 
-    protocol    = "tcp" 
-    cidr_blocks = ["0.0.0.0/0"] 
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
-  
-  egress { 
-    from_port   = 0 
-    to_port     = 0 
-    protocol    = "-1" 
-    cidr_blocks = ["0.0.0.0/0"] 
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
@@ -267,51 +283,51 @@ resource "aws_security_group" "nat_sg" {
 resource "aws_security_group" "k8s_sg" {
   name   = var.k8s_sg_name
   vpc_id = aws_vpc.lz_vpc.id
-  
-  
-  ingress { 
-    from_port   = 22 
-    to_port     = 22 
-    protocol    = "tcp" 
-    cidr_blocks = ["0.0.0.0/0"] 
+
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
-  
-  ingress { 
-    from_port   = 80 
-    to_port     = 80 
-    protocol    = "tcp" 
-    cidr_blocks = ["0.0.0.0/0"] 
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
-  
-  ingress { 
-    from_port   = 443 
-    to_port     = 443 
-    protocol    = "tcp" 
-    cidr_blocks = ["0.0.0.0/0"] 
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   // 쿠버네티스 API 및 노드 간 통신을 위한 포트
   // EKS 사용 시 노드 간의 통신이 원활해야 함
-  ingress { 
-    from_port   = 10250 
-    to_port     = 10250 
-    protocol    = "tcp" 
-    cidr_blocks = ["10.40.0.0/16"] 
+  ingress {
+    from_port   = 10250
+    to_port     = 10250
+    protocol    = "tcp"
+    cidr_blocks = ["10.40.0.0/16"]
   }
 
   // 노드 간 UDP 통신 (Flannel/Calico 등의 CNI 사용 시 필요)
-  ingress { 
-    from_port   = 4789 
-    to_port     = 4789 
-    protocol    = "udp" 
-    cidr_blocks = ["10.40.0.0/16"] 
+  ingress {
+    from_port   = 4789
+    to_port     = 4789
+    protocol    = "udp"
+    cidr_blocks = ["10.40.0.0/16"]
   }
-  
-  egress { 
-    from_port   = 0 
-    to_port     = 0 
-    protocol    = "-1" 
-    cidr_blocks = ["0.0.0.0/0"] 
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 # endregion
