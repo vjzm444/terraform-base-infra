@@ -28,6 +28,7 @@ MONITORING_ENABLED="${MONITORING_ENABLED:-true}"
 GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-Vamserlike123!}"
 GRAFANA_RELEASE_NAME="${GRAFANA_RELEASE_NAME:-vamserlike-monitoring}"
 GRAFANA_SERVICE_NAME="${GRAFANA_RELEASE_NAME}-grafana"
+GRAFANA_ADMIN_SECRET_NAME="${GRAFANA_ADMIN_SECRET_NAME:-vamserlike-grafana-admin}"
 GRAFANA_LB=""
 
 echo "===== Vamserlike Bootstrap Start ====="
@@ -41,6 +42,8 @@ echo "MANIFEST_REPO_URL=${MANIFEST_REPO_URL}"
 echo "MANIFEST_PATH=${MANIFEST_PATH}"
 echo "MONITORING_ENABLED=${MONITORING_ENABLED}"
 echo "GRAFANA_RELEASE_NAME=${GRAFANA_RELEASE_NAME}"
+echo "GRAFANA_SERVICE_NAME=${GRAFANA_SERVICE_NAME}"
+echo "GRAFANA_ADMIN_SECRET_NAME=${GRAFANA_ADMIN_SECRET_NAME}"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 echo "ACCOUNT_ID=${ACCOUNT_ID}"
@@ -277,6 +280,13 @@ echo "===== Install Prometheus and Grafana Monitoring Stack ====="
 if [ "${MONITORING_ENABLED}" = "true" ]; then
   kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
+  echo "===== Create Grafana Admin Secret ====="
+  kubectl create secret generic "${GRAFANA_ADMIN_SECRET_NAME}" \
+    -n monitoring \
+    --from-literal=admin-user=admin \
+    --from-literal=admin-password="${GRAFANA_ADMIN_PASSWORD}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
   helm repo update
 
@@ -285,9 +295,13 @@ if [ "${MONITORING_ENABLED}" = "true" ]; then
     --set grafana.enabled=true \
     --set grafana.image.repository=grafana/grafana \
     --set grafana.image.tag=10.4.10 \
-    --set grafana.adminUser=admin \
-    --set grafana.adminPassword="${GRAFANA_ADMIN_PASSWORD}" \
+    --set grafana.admin.existingSecret="${GRAFANA_ADMIN_SECRET_NAME}" \
+    --set grafana.admin.userKey=admin-user \
+    --set grafana.admin.passwordKey=admin-password \
     --set grafana.service.type=LoadBalancer \
+    --set-string grafana.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="external" \
+    --set-string grafana.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-nlb-target-type"="ip" \
+    --set-string grafana.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-scheme"="internet-facing" \
     --set grafana.defaultDashboardsEnabled=true \
     --set grafana.defaultDashboardsTimezone=browser \
     --set prometheus.enabled=true \
@@ -297,7 +311,22 @@ if [ "${MONITORING_ENABLED}" = "true" ]; then
     --set kubeStateMetrics.enabled=true \
     --set nodeExporter.enabled=true \
     --wait \
-    --timeout 10m  
+    --timeout 10m
+
+  echo "===== Reset Grafana Admin Password ====="
+  GRAFANA_POD="$(kubectl get pod -n monitoring \
+    -l app.kubernetes.io/name=grafana \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+
+  if [ -n "$GRAFANA_POD" ]; then
+    kubectl exec -n monitoring "$GRAFANA_POD" -c grafana -- \
+      grafana cli admin reset-admin-password "${GRAFANA_ADMIN_PASSWORD}" || \
+    kubectl exec -n monitoring "$GRAFANA_POD" -c grafana -- \
+      grafana-cli admin reset-admin-password "${GRAFANA_ADMIN_PASSWORD}" || \
+    echo "[WARN] Grafana admin password reset command failed. Check Grafana secret or reset manually."
+  else
+    echo "[WARN] Grafana pod not found. Skip password reset."
+  fi
 
   echo "===== Wait for Grafana LoadBalancer ====="
 

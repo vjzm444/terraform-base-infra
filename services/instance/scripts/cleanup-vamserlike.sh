@@ -20,9 +20,10 @@ ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-vamserlike-backend}"
 MONITORING_ENABLED="${MONITORING_ENABLED:-true}"
 GRAFANA_RELEASE_NAME="${GRAFANA_RELEASE_NAME:-vamserlike-monitoring}"
 GRAFANA_SERVICE_NAME="${GRAFANA_RELEASE_NAME}-grafana"
+GRAFANA_ADMIN_SECRET_NAME="${GRAFANA_ADMIN_SECRET_NAME:-vamserlike-grafana-admin}"
 
 # CloudWatch Log Group 삭제 여부
-# 기본값은 false: 로그는 증빙/확인용으로 남겨둠
+# 기본값 false: 로그는 증빙/확인용으로 남겨둠
 # 완전 삭제하려면 env에 DELETE_CLOUDWATCH_LOG_GROUP=true 추가
 DELETE_CLOUDWATCH_LOG_GROUP="${DELETE_CLOUDWATCH_LOG_GROUP:-false}"
 BACKEND_LOG_GROUP_NAME="${BACKEND_LOG_GROUP_NAME:-/ec2/vamserlike-backend}"
@@ -33,6 +34,8 @@ echo "CLUSTER_NAME=${CLUSTER_NAME}"
 echo "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
 echo "MONITORING_ENABLED=${MONITORING_ENABLED}"
 echo "GRAFANA_RELEASE_NAME=${GRAFANA_RELEASE_NAME}"
+echo "GRAFANA_SERVICE_NAME=${GRAFANA_SERVICE_NAME}"
+echo "GRAFANA_ADMIN_SECRET_NAME=${GRAFANA_ADMIN_SECRET_NAME}"
 echo "DELETE_CLOUDWATCH_LOG_GROUP=${DELETE_CLOUDWATCH_LOG_GROUP}"
 echo "BACKEND_LOG_GROUP_NAME=${BACKEND_LOG_GROUP_NAME}"
 
@@ -66,10 +69,20 @@ if [ "$CLUSTER_EXISTS" = "true" ]; then
 
   kubectl delete namespace vamserlike --ignore-not-found=true || true
 
-  echo "===== Delete Grafana / Monitoring Stack ====="
+  echo "===== Delete Grafana / Prometheus Monitoring Stack ====="
   if [ "${MONITORING_ENABLED}" = "true" ]; then
+    # Grafana Service가 internet-facing NLB를 만들기 때문에 먼저 삭제해서 LB 삭제 유도
     kubectl delete svc "${GRAFANA_SERVICE_NAME}" -n monitoring --ignore-not-found=true || true
+
+    # Helm release 삭제
     helm uninstall "${GRAFANA_RELEASE_NAME}" -n monitoring || true
+
+    # Grafana admin secret 삭제
+    kubectl delete secret "${GRAFANA_ADMIN_SECRET_NAME}" -n monitoring --ignore-not-found=true || true
+
+    echo "Waiting for Grafana LoadBalancer deletion trigger..."
+    sleep 30
+
     kubectl delete namespace monitoring --ignore-not-found=true || true
   else
     echo "Monitoring cleanup skipped. MONITORING_ENABLED=${MONITORING_ENABLED}"
@@ -77,6 +90,10 @@ if [ "$CLUSTER_EXISTS" = "true" ]; then
 
   echo "===== Delete Argo CD LoadBalancer and Namespace ====="
   kubectl delete svc argocd-server -n argocd --ignore-not-found=true || true
+
+  echo "Waiting for Argo CD LoadBalancer deletion trigger..."
+  sleep 30
+
   kubectl delete namespace argocd --ignore-not-found=true || true
 
   echo "===== Delete AWS for Fluent Bit CloudWatch Logging ====="
@@ -100,10 +117,10 @@ if [ "$CLUSTER_EXISTS" = "true" ]; then
     sleep 15
   done
 
-  echo "===== Check Remaining Load Balancers ====="
+  echo "===== Check Remaining Load Balancers Before Cluster Delete ====="
   aws elbv2 describe-load-balancers \
     --region "${AWS_REGION}" \
-    --query "LoadBalancers[?contains(LoadBalancerName, 'k8s') || contains(DNSName, 'elb.amazonaws.com')].[LoadBalancerName,DNSName,State.Code]" \
+    --query "LoadBalancers[?contains(LoadBalancerName, 'k8s')].[LoadBalancerName,DNSName,Scheme,Type,State.Code]" \
     --output table || true
 
   echo "===== Delete IAM ServiceAccounts ====="
@@ -152,7 +169,7 @@ fi
 echo "===== Remaining Load Balancers Check ====="
 aws elbv2 describe-load-balancers \
   --region "${AWS_REGION}" \
-  --query "LoadBalancers[*].[LoadBalancerName,DNSName,State.Code]" \
+  --query "LoadBalancers[*].[LoadBalancerName,DNSName,Scheme,Type,State.Code]" \
   --output table || true
 
 echo "===== Remaining EKS Clusters Check ====="
