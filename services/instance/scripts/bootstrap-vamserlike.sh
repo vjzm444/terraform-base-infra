@@ -228,6 +228,40 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
 
 kubectl rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=300s
 
+echo "===== Install AWS for Fluent Bit CloudWatch Logging ====="
+
+kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
+
+eksctl create iamserviceaccount \
+  --cluster="${CLUSTER_NAME}" \
+  --region="${AWS_REGION}" \
+  --namespace=amazon-cloudwatch \
+  --name=aws-for-fluent-bit \
+  --attach-policy-arn=arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy \
+  --override-existing-serviceaccounts \
+  --approve
+
+helm repo add eks https://aws.github.io/eks-charts || true
+helm repo update
+
+helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
+  -n amazon-cloudwatch \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-for-fluent-bit \
+  --set cloudWatchLogs.enabled=true \
+  --set cloudWatchLogs.region="${AWS_REGION}" \
+  --set cloudWatchLogs.logGroupName="/ec2/vamserlike-backend" \
+  --set cloudWatchLogs.logStreamPrefix="vamserlike-" \
+  --set cloudWatchLogs.autoCreateGroup=true \
+  --set cloudWatch.enabled=false \
+  --set firehose.enabled=false \
+  --set kinesis.enabled=false \
+  --set kinesis_streams.enabled=false \
+  --set elasticsearch.enabled=false \
+  --set s3.enabled=false
+
+kubectl rollout status daemonset/aws-for-fluent-bit -n amazon-cloudwatch --timeout=300s
+
 echo "===== Create DB Secret ====="
 kubectl create namespace vamserlike --dry-run=client -o yaml | kubectl apply -f -
 
@@ -357,7 +391,7 @@ HEALTH_OK="false"
 
 for i in {1..20}; do
   echo "Health check try ${i}/20"
-  if curl -fsS "http://${BACKEND_ALB}/api/Health"; then
+  if curl -fsS "http://${BACKEND_ALB}/api/health"; then
     echo
     HEALTH_OK="true"
     break
@@ -382,12 +416,14 @@ echo "Argo CD URL: http://${ARGOCD_LB}"
 echo "Argo CD ID : admin"
 echo "Argo CD PW : ${ARGOCD_PW}"
 echo "Backend ALB: http://${BACKEND_ALB}"
-echo "Backend Health: http://${BACKEND_ALB}/api/Health"
+echo "Backend Health: http://${BACKEND_ALB}/api/health"
 
 echo ""
 echo "Check commands:"
 echo "kubectl get applications -n argocd"
 echo "kubectl get pods -n vamserlike"
 echo "kubectl get ingress -n vamserlike"
+echo "kubectl get pods -n amazon-cloudwatch"
+echo "aws logs describe-log-groups --region ${AWS_REGION} --log-group-name-prefix /ec2/vamserlike-backend"
 
 echo "===== Vamserlike Bootstrap Done ====="
