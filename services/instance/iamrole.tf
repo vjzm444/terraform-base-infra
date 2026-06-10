@@ -27,7 +27,7 @@ resource "aws_iam_role_policy_attachment" "cognito_access" {
 }
 
 
-# 4. Grafana에서 아테나를 봐야되기에 관련권한(TODO: 추후 기영 Grafana인스턴스에 부착예정)
+# 4. Grafana에서 아테나를 봐야되기에 관련권한
 resource "aws_iam_role_policy" "athena_access_policy" {
   name = "athena-access-policy"
   role = aws_iam_role.backend_role.id

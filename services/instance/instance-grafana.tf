@@ -55,19 +55,19 @@ resource "aws_security_group" "private_sg" {
   vpc_id = aws_vpc.lz_vpc.id
   
   # 1. ALB 보안그룹에서 오는 트래픽만 허용 (핵심!)
-  ingress { 
-    from_port       = 80 
-    to_port         = 80 
-    protocol        = "tcp" 
-    security_groups = [aws_security_group.alb_sg.id] 
-  }
-
   # ingress { 
   #   from_port       = 80 
   #   to_port         = 80 
   #   protocol        = "tcp" 
-  #   cidr_blocks = ["10.40.0.0/16"]
+  #   security_groups = [aws_security_group.alb_sg.id] 
   # }
+
+  ingress { 
+    from_port       = 80 
+    to_port         = 80 
+    protocol        = "tcp" 
+    cidr_blocks = ["10.40.0.0/16"]
+  }
 
   # NAT 인스턴스에서 들어오는 모든 트래픽 허용
   ingress { 
