@@ -68,6 +68,8 @@ REQUIRED_VARS=(
   PUBLIC_SUBNET_2C_NAME
   PRIVATE_SUBNET_2A_NAME
   PRIVATE_SUBNET_2C_NAME
+  COGNITO_USER_POOL_ID
+  COGNITO_CLIENT_ID
   MYSQL_CONNECTION_STRING
   MANIFEST_REPO_URL
   MANIFEST_PATH
@@ -349,12 +351,18 @@ else
   echo "Monitoring install skipped. MONITORING_ENABLED=${MONITORING_ENABLED}"
 fi
 
-echo "===== Create DB Secret ====="
+echo "===== Create Backend Secrets ====="
 kubectl create namespace vamserlike --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl create secret generic vamserlike-db-secret \
   -n vamserlike \
   --from-literal=connectionString="${MYSQL_CONNECTION_STRING}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic vamserlike-cognito-secret \
+  -n vamserlike \
+  --from-literal=userPoolId="${COGNITO_USER_POOL_ID}" \
+  --from-literal=clientId="${COGNITO_CLIENT_ID}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "===== Install Argo CD ====="
@@ -507,6 +515,8 @@ echo "Argo CD URL: http://${ARGOCD_LB}"
 echo "Argo CD ID : admin"
 echo "Argo CD PW : ${ARGOCD_PW}"
 echo "Backend ALB: http://${BACKEND_ALB}"
+echo "Backend Root: http://${BACKEND_ALB}/"
+echo "Backend Swagger: http://${BACKEND_ALB}/swagger"
 echo "Backend Health: http://${BACKEND_ALB}/api/health"
 
 if [ "${MONITORING_ENABLED}" = "true" ]; then
@@ -523,6 +533,7 @@ echo "kubectl get ingress -n vamserlike"
 echo "kubectl get pods -n amazon-cloudwatch"
 echo "kubectl get pods -n monitoring"
 echo "kubectl get svc -n monitoring"
+echo "kubectl get secret vamserlike-cognito-secret -n vamserlike -o yaml"
 echo "aws logs describe-log-groups --region ${AWS_REGION} --log-group-name-prefix /ec2/vamserlike-backend"
 
 echo "===== Vamserlike Bootstrap Done ====="
