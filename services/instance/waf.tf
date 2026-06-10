@@ -22,23 +22,22 @@
 variable "allowed_country_codes" {
   description = "서비스 대상 국가(allowlist). 이 외 국가는 차단."
   type        = list(string)
-  default     = ["KR", "US", "JP"]
+  default     = ["KR", "US", "JP"] # 허용할 국가 코드 (한국, 미국, 일본)
 }
 
 variable "waf_rate_limit" {
   description = "Rate-based 규칙 임계값 (5분 / IP). WAFv2 최소값 100."
   type        = number
-  default     = 100
+  default     = 100 # 5분당 허용되는 최대 요청 수
 }
 
 resource "aws_wafv2_web_acl" "backend" {
   name        = "vamserlike-backend-acl"
-  description = "Vamserlike backend protection spec v11" # 한글과 괄호를 제거한 영문 설명
-  scope       = "REGIONAL"
+  description = "Vamserlike backend protection spec v11"
+  scope       = "REGIONAL" # ALB(리전 리소스)에 연결하기 위해 설정
 
-  # 기본은 허용. 차단은 아래 개별 규칙이 담당한다.
   default_action {
-    allow {}
+    allow {} # 아래 규칙들에 해당하지 않는 모든 정상 트래픽은 기본 허용
   }
 
   # ----- Case 1. 지역 기반 접근 제어 (allowlist) -----
@@ -51,16 +50,16 @@ resource "aws_wafv2_web_acl" "backend" {
           response_code = 403
           response_header {
             name  = "x-waf-rule"
-            value = "case1-geo-allowlist"
+            value = "case1-geo-allowlist" # 테스트 툴이 차단 원인을 식별할 커스텀 헤더
           }
         }
       }
     }
     statement {
-      not_statement {
+      not_statement { # 아래 조건(허용 국가)에 '해당하지 않는' 요청 차단
         statement {
           geo_match_statement {
-            country_codes = var.allowed_country_codes
+            country_codes = var.allowed_country_codes # ["KR", "US", "JP"]
           }
         }
       }
@@ -68,6 +67,172 @@ resource "aws_wafv2_web_acl" "backend" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "case1-geo-allowlist"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 2-1. 랭킹 조회 속도 제한 -----
+  rule {
+    name     = "case2-rate-ranking"
+    priority = 10
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case2-rate-ranking"
+          }
+        }
+      }
+    }
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_rate_limit # 100회 초과 시 차단 발동
+        aggregate_key_type    = "IP" # 출발지 IP 주소를 기준으로 카운팅
+        evaluation_window_sec = 300 # 5분(300초) 동안의 요청량 측정
+        scope_down_statement {
+          byte_match_statement {
+            field_to_match {
+              uri_path {}
+            }
+            positional_constraint = "STARTS_WITH" # 아래 경로로 시작하는 요청만 집계
+            search_string         = "/api/players/ranking" # 랭킹 조회 API 대상 (서버 요금 방어)
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case2-rate-ranking"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 2-2. 캐릭터 해금 속도 제한 -----
+  rule {
+    name     = "case2-rate-unlock"
+    priority = 11
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case2-rate-unlock"
+          }
+        }
+      }
+    }
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_rate_limit
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+        scope_down_statement {
+          byte_match_statement {
+            field_to_match {
+              uri_path {}
+            }
+            positional_constraint = "STARTS_WITH"
+            search_string         = "/api/players/me/characters/unlock" # 캐릭터 해금 API 대상
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case2-rate-unlock"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 3. 결과 저장 속도 제한 -----
+  rule {
+    name     = "case3-rate-progress"
+    priority = 12
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case3-rate-progress"
+          }
+        }
+      }
+    }
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_rate_limit
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+        scope_down_statement {
+          byte_match_statement {
+            field_to_match {
+              uri_path {}
+            }
+            positional_constraint = "STARTS_WITH"
+            search_string         = "/api/players/me/progress" # 결과 저장 API 대상 (재화 무한 복사 핵 방어)
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case3-rate-progress"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 4. SQLi/XSS 등 알려진 웹 공격 패턴 (CommonRuleSet) -----
+  rule {
+    name     = "case4-aws-common-ruleset"
+    priority = 30
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS" # AWS에서 기본 제공하는 관리형 룰셋 사용
+        name        = "AWSManagedRulesCommonRuleSet" # XSS 및 보편적 웹 취약점 방어
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case4-aws-common-ruleset"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 4b. SQL 인젝션 차단 (SQLiRuleSet) -----
+  rule {
+    name     = "case4-aws-sqli-ruleset"
+    priority = 33
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesSQLiRuleSet" # 정밀한 SQL Injection 패턴 탐지 및 차단
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case4-aws-sqli-ruleset"
       sampled_requests_enabled   = true
     }
   }
@@ -91,21 +256,104 @@ resource "aws_wafv2_web_acl" "backend" {
       size_constraint_statement {
         field_to_match {
           body {
-            # 8KB 초과로 검사 한도를 넘는 바디는 매치(=차단) 처리
-            oversize_handling = "MATCH"
+            oversize_handling = "MATCH" # WAF 검사 한도(8KB) 초과 시 무조건 차단 처리
           }
         }
-        comparison_operator = "GT"
-        size                = 8192
+        comparison_operator = "GT" # 초과 (Greater Than)
+        size                = 8192 # 8KB 크기 제한
         text_transformation {
           priority = 0
-          type     = "NONE"
+          type     = "NONE" # 텍스트 변환 없이 원본 크기 그대로 검사
         }
       }
     }
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "case5-body-size-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 6. 로그인 속도 제한 -----
+  rule {
+    name     = "case6-rate-login"
+    priority = 13
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case6-rate-login"
+          }
+        }
+      }
+    }
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_rate_limit
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+        scope_down_statement {
+          byte_match_statement {
+            field_to_match {
+              uri_path {}
+            }
+            positional_constraint = "STARTS_WITH"
+            search_string         = "/api/auth/login" # 로그인 API 대상 (무차별 대입 공격 방어)
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case6-rate-login"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 7. 회원가입 속도 제한 -----
+  rule {
+    name     = "case7-rate-signup"
+    priority = 14
+    action {
+      block {
+        custom_response {
+          response_code = 403
+          response_header {
+            name  = "x-waf-rule"
+            value = "case7-rate-signup"
+          }
+        }
+      }
+    }
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_rate_limit
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+        scope_down_statement {
+          byte_match_statement {
+            field_to_match {
+              uri_path {}
+            }
+            positional_constraint = "STARTS_WITH"
+            search_string         = "/api/auth/signup" # 회원가입 API 대상 (봇 대량생성 방어)
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case7-rate-signup"
       sampled_requests_enabled   = true
     }
   }
@@ -128,19 +376,19 @@ resource "aws_wafv2_web_acl" "backend" {
     statement {
       or_statement {
         dynamic "statement" {
-          for_each = ["sqlmap", "nikto", "zgrab", "selenium", "puppeteer"]
+          for_each = ["sqlmap", "nikto", "zgrab", "selenium", "puppeteer"] # 탐지할 해킹/자동화 툴 키워드
           content {
             byte_match_statement {
               field_to_match {
                 single_header {
-                  name = "user-agent"
+                  name = "user-agent" # HTTP User-Agent 헤더 검사
                 }
               }
-              positional_constraint = "CONTAINS"
+              positional_constraint = "CONTAINS" # 해당 키워드가 포함되어 있으면 차단
               search_string         = statement.value
               text_transformation {
                 priority = 0
-                type     = "LOWERCASE"
+                type     = "LOWERCASE" # 대소문자 구분 없이 탐지하기 위해 소문자로 변환
               }
             }
           }
@@ -154,9 +402,47 @@ resource "aws_wafv2_web_acl" "backend" {
     }
   }
 
+  # ----- Case 9. 익명 IP / Tor / 공개 프록시 (AnonymousIpList) -----
+  rule {
+    name     = "case9-aws-anonymous-ip"
+    priority = 32
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesAnonymousIpList" # VPN, Tor 등 우회 목적의 익명 IP 접근 차단
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case9-aws-anonymous-ip"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # ----- Case 10. 알려진 취약점 공격 패턴 (KnownBadInputs) -----
+  rule {
+    name     = "case10-aws-known-bad-inputs"
+    priority = 31
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesKnownBadInputsRuleSet" # Log4j 등 잘 알려진 취약점 페이로드 차단
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "case10-aws-known-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
   # ----- Case 10b. Log4Shell(JNDI) 명시적 차단 -----
-  # 관리형 KnownBadInputs가 취약 경로(ExploitablePaths)는 잡지만 바디/헤더의
-  # JNDI 문자열을 놓치는 경우를 대비한 명시적 규칙. 커스텀 헤더로 식별도 가능하다.
   rule {
     name     = "case10-log4j-jndi"
     priority = 3
@@ -173,6 +459,7 @@ resource "aws_wafv2_web_acl" "backend" {
     }
     statement {
       or_statement {
+        # 바디, 파라미터, 주소, 헤더 내에 jndi: 패턴이 포함되어 있는지 각각 검사
         statement {
           byte_match_statement {
             field_to_match {
@@ -242,301 +529,6 @@ resource "aws_wafv2_web_acl" "backend" {
     }
   }
 
-  # ----- Case 2-1. 랭킹 조회 속도 제한 -----
-  rule {
-    name     = "case2-rate-ranking"
-    priority = 10
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case2-rate-ranking"
-          }
-        }
-      }
-    }
-    statement {
-      rate_based_statement {
-        limit                 = var.waf_rate_limit
-        aggregate_key_type    = "IP"
-        evaluation_window_sec = 300
-        scope_down_statement {
-          byte_match_statement {
-            field_to_match {
-              uri_path {}
-            }
-            positional_constraint = "STARTS_WITH"
-            search_string         = "/api/players/ranking"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case2-rate-ranking"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 2-2. 캐릭터 해금 속도 제한 -----
-  rule {
-    name     = "case2-rate-unlock"
-    priority = 11
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case2-rate-unlock"
-          }
-        }
-      }
-    }
-    statement {
-      rate_based_statement {
-        limit                 = var.waf_rate_limit
-        aggregate_key_type    = "IP"
-        evaluation_window_sec = 300
-        scope_down_statement {
-          byte_match_statement {
-            field_to_match {
-              uri_path {}
-            }
-            positional_constraint = "STARTS_WITH"
-            search_string         = "/api/players/me/characters/unlock"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case2-rate-unlock"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 3. 결과 저장 속도 제한 -----
-  rule {
-    name     = "case3-rate-progress"
-    priority = 12
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case3-rate-progress"
-          }
-        }
-      }
-    }
-    statement {
-      rate_based_statement {
-        limit                 = var.waf_rate_limit
-        aggregate_key_type    = "IP"
-        evaluation_window_sec = 300
-        scope_down_statement {
-          byte_match_statement {
-            field_to_match {
-              uri_path {}
-            }
-            positional_constraint = "STARTS_WITH"
-            search_string         = "/api/players/me/progress"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case3-rate-progress"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 6. 로그인 속도 제한 -----
-  rule {
-    name     = "case6-rate-login"
-    priority = 13
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case6-rate-login"
-          }
-        }
-      }
-    }
-    statement {
-      rate_based_statement {
-        limit                 = var.waf_rate_limit
-        aggregate_key_type    = "IP"
-        evaluation_window_sec = 300
-        scope_down_statement {
-          byte_match_statement {
-            field_to_match {
-              uri_path {}
-            }
-            positional_constraint = "STARTS_WITH"
-            search_string         = "/api/auth/login"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case6-rate-login"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 7. 회원가입 속도 제한 -----
-  rule {
-    name     = "case7-rate-signup"
-    priority = 14
-    action {
-      block {
-        custom_response {
-          response_code = 403
-          response_header {
-            name  = "x-waf-rule"
-            value = "case7-rate-signup"
-          }
-        }
-      }
-    }
-    statement {
-      rate_based_statement {
-        limit                 = var.waf_rate_limit
-        aggregate_key_type    = "IP"
-        evaluation_window_sec = 300
-        scope_down_statement {
-          byte_match_statement {
-            field_to_match {
-              uri_path {}
-            }
-            positional_constraint = "STARTS_WITH"
-            search_string         = "/api/auth/signup"
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
-            }
-          }
-        }
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case7-rate-signup"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 4. SQLi/XSS 등 알려진 웹 공격 패턴 (CommonRuleSet) -----
-  # 관리형 룰셋은 그룹 내부에서 차단하므로 x-waf-rule 헤더가 없다.
-  # 참고: 이 룰셋의 SizeRestrictions_BODY 가 8KB 초과 바디도 함께 차단하므로
-  #       Case 5와 일부 중복되나, 명세 충실성을 위해 두 규칙을 모두 둔다.
-  rule {
-    name     = "case4-aws-common-ruleset"
-    priority = 30
-    override_action {
-      none {}
-    }
-    statement {
-      managed_rule_group_statement {
-        vendor_name = "AWS"
-        name        = "AWSManagedRulesCommonRuleSet"
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case4-aws-common-ruleset"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 10. 알려진 취약점 공격 패턴 (KnownBadInputs) -----
-  rule {
-    name     = "case10-aws-known-bad-inputs"
-    priority = 31
-    override_action {
-      none {}
-    }
-    statement {
-      managed_rule_group_statement {
-        vendor_name = "AWS"
-        name        = "AWSManagedRulesKnownBadInputsRuleSet"
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case10-aws-known-bad-inputs"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 9. 익명 IP / Tor / 공개 프록시 (AnonymousIpList) -----
-  rule {
-    name     = "case9-aws-anonymous-ip"
-    priority = 32
-    override_action {
-      none {}
-    }
-    statement {
-      managed_rule_group_statement {
-        vendor_name = "AWS"
-        name        = "AWSManagedRulesAnonymousIpList"
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case9-aws-anonymous-ip"
-      sampled_requests_enabled   = true
-    }
-  }
-
-  # ----- Case 4b. SQL 인젝션 차단 (SQLiRuleSet) -----
-  # CommonRuleSet에는 SQLi 탐지가 없어(XSS 등만 포함) SQL 인젝션이 통과한다.
-  # SQLi 전용 관리형 룰셋을 추가해 SQL 인젝션 패턴을 차단한다.
-  rule {
-    name     = "case4-aws-sqli-ruleset"
-    priority = 33
-    override_action {
-      none {}
-    }
-    statement {
-      managed_rule_group_statement {
-        vendor_name = "AWS"
-        name        = "AWSManagedRulesSQLiRuleSet"
-      }
-    }
-    visibility_config {
-      cloudwatch_metrics_enabled = true
-      metric_name                = "case4-aws-sqli-ruleset"
-      sampled_requests_enabled   = true
-    }
-  }
-
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "vamserlike-backend-acl"
@@ -548,12 +540,12 @@ resource "aws_wafv2_web_acl" "backend" {
 
 # ----- Web ACL을 ALB에 연결 -----
 resource "aws_wafv2_web_acl_association" "backend" {
-  resource_arn = aws_lb.alb.arn
+  resource_arn = aws_lb.alb.arn # 앞서 생성한 로드 밸런서(ALB)에 부착
   web_acl_arn  = aws_wafv2_web_acl.backend.arn
 }
 
 # 테스트 툴(WAF_TARGET_URL)에 넣을 ALB 주소
 output "waf_target_url" {
-  value       = "http://${aws_lb.alb.dns_name}"
+  value       = "http://${aws_lb.alb.dns_name}" # 테스트 툴 환경변수에 바로 복붙할 수 있도록 터미널에 출력
   description = "WAF 보안 테스트 툴의 WAF_TARGET_URL 값"
 }
