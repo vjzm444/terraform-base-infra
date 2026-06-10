@@ -23,6 +23,13 @@ ECR_REPOSITORY="${ECR_REPOSITORY:-vamserlike-backend}"
 ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-vamserlike-backend}"
 MANIFEST_PATH="${MANIFEST_PATH:-overlays/dev}"
 
+# Monitoring / Grafana
+MONITORING_ENABLED="${MONITORING_ENABLED:-true}"
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-Vamserlike123!}"
+GRAFANA_RELEASE_NAME="${GRAFANA_RELEASE_NAME:-vamserlike-monitoring}"
+GRAFANA_SERVICE_NAME="${GRAFANA_RELEASE_NAME}-grafana"
+GRAFANA_LB=""
+
 echo "===== Vamserlike Bootstrap Start ====="
 echo "AWS_REGION=${AWS_REGION}"
 echo "CLUSTER_NAME=${CLUSTER_NAME}"
@@ -32,6 +39,8 @@ echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
 echo "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
 echo "MANIFEST_REPO_URL=${MANIFEST_REPO_URL}"
 echo "MANIFEST_PATH=${MANIFEST_PATH}"
+echo "MONITORING_ENABLED=${MONITORING_ENABLED}"
+echo "GRAFANA_RELEASE_NAME=${GRAFANA_RELEASE_NAME}"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 echo "ACCOUNT_ID=${ACCOUNT_ID}"
@@ -263,6 +272,54 @@ helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
 
 kubectl rollout status daemonset/aws-for-fluent-bit -n amazon-cloudwatch --timeout=300s
 
+echo "===== Install Prometheus and Grafana Monitoring Stack ====="
+
+if [ "${MONITORING_ENABLED}" = "true" ]; then
+  kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+  helm repo update
+
+  helm upgrade --install "${GRAFANA_RELEASE_NAME}" prometheus-community/kube-prometheus-stack \
+    -n monitoring \
+    --set grafana.enabled=true \
+    --set grafana.image.repository=grafana/grafana \
+    --set grafana.image.tag=10.4.10 \
+    --set grafana.adminUser=admin \
+    --set grafana.adminPassword="${GRAFANA_ADMIN_PASSWORD}" \
+    --set grafana.service.type=LoadBalancer \
+    --set grafana.defaultDashboardsEnabled=true \
+    --set grafana.defaultDashboardsTimezone=browser \
+    --set prometheus.enabled=true \
+    --set prometheus.prometheusSpec.retention=2d \
+    --set prometheus.prometheusSpec.retentionSize=2GB \
+    --set alertmanager.enabled=false \
+    --set kubeStateMetrics.enabled=true \
+    --set nodeExporter.enabled=true \
+    --wait \
+    --timeout 10m  
+
+  echo "===== Wait for Grafana LoadBalancer ====="
+
+  for i in {1..40}; do
+    GRAFANA_LB="$(kubectl get svc "${GRAFANA_SERVICE_NAME}" -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+
+    if [ -n "$GRAFANA_LB" ]; then
+      echo "Grafana LB: ${GRAFANA_LB}"
+      break
+    fi
+
+    echo "Waiting for Grafana LoadBalancer... ${i}/40"
+    sleep 15
+  done
+
+  if [ -z "$GRAFANA_LB" ]; then
+    echo "[WARN] Grafana LoadBalancer hostname is still empty."
+  fi
+else
+  echo "Monitoring install skipped. MONITORING_ENABLED=${MONITORING_ENABLED}"
+fi
+
 echo "===== Create DB Secret ====="
 kubectl create namespace vamserlike --dry-run=client -o yaml | kubectl apply -f -
 
@@ -413,11 +470,21 @@ fi
 echo "===== Output ====="
 ARGOCD_PW="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
 
+if [ "${MONITORING_ENABLED}" = "true" ]; then
+  GRAFANA_LB="$(kubectl get svc "${GRAFANA_SERVICE_NAME}" -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+fi
+
 echo "Argo CD URL: http://${ARGOCD_LB}"
 echo "Argo CD ID : admin"
 echo "Argo CD PW : ${ARGOCD_PW}"
 echo "Backend ALB: http://${BACKEND_ALB}"
 echo "Backend Health: http://${BACKEND_ALB}/api/health"
+
+if [ "${MONITORING_ENABLED}" = "true" ]; then
+  echo "Grafana URL: http://${GRAFANA_LB}"
+  echo "Grafana ID : admin"
+  echo "Grafana PW : ${GRAFANA_ADMIN_PASSWORD}"
+fi
 
 echo ""
 echo "Check commands:"
@@ -425,6 +492,8 @@ echo "kubectl get applications -n argocd"
 echo "kubectl get pods -n vamserlike"
 echo "kubectl get ingress -n vamserlike"
 echo "kubectl get pods -n amazon-cloudwatch"
+echo "kubectl get pods -n monitoring"
+echo "kubectl get svc -n monitoring"
 echo "aws logs describe-log-groups --region ${AWS_REGION} --log-group-name-prefix /ec2/vamserlike-backend"
 
 echo "===== Vamserlike Bootstrap Done ====="
