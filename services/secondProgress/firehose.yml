@@ -50,7 +50,7 @@ Resources:
                 - ParameterName: "DataMessageExtraction"
                   ParameterValue: "True"
         BufferingHints:
-          IntervalInSeconds: 300
+          IntervalInSeconds: 120
           SizeInMBs: 5
 
 
