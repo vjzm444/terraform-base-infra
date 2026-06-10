@@ -252,6 +252,7 @@ helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
   --set cloudWatchLogs.region="${AWS_REGION}" \
   --set cloudWatchLogs.logGroupName="/ec2/vamserlike-backend" \
   --set cloudWatchLogs.logStreamPrefix="vamserlike-" \
+  --set cloudWatchLogs.logKey="log" \
   --set cloudWatchLogs.autoCreateGroup=true \
   --set cloudWatch.enabled=false \
   --set firehose.enabled=false \
