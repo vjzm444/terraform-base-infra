@@ -23,6 +23,14 @@ ECR_REPOSITORY="${ECR_REPOSITORY:-vamserlike-backend}"
 ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-vamserlike-backend}"
 MANIFEST_PATH="${MANIFEST_PATH:-overlays/dev}"
 
+# Backend Image Build / Push
+BACKEND_REPO_URL="${BACKEND_REPO_URL:-https://github.com/rlduddl/Vamserlike-backend.git}"
+BACKEND_BRANCH="${BACKEND_BRANCH:-rlduddl5519}"
+BACKEND_IMAGE_TAG="${BACKEND_IMAGE_TAG:-latest}"
+BACKEND_DOCKERFILE_PATH="${BACKEND_DOCKERFILE_PATH:-Dockerfile}"
+BACKEND_BUILD_CONTEXT="${BACKEND_BUILD_CONTEXT:-.}"
+BACKEND_SOURCE_DIR="${BACKEND_SOURCE_DIR:-${HOME}/Vamserlike-backend}"
+
 # Monitoring / Grafana
 MONITORING_ENABLED="${MONITORING_ENABLED:-true}"
 GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-Vamserlike123!}"
@@ -40,13 +48,25 @@ echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
 echo "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
 echo "MANIFEST_REPO_URL=${MANIFEST_REPO_URL}"
 echo "MANIFEST_PATH=${MANIFEST_PATH}"
+echo "BACKEND_REPO_URL=${BACKEND_REPO_URL}"
+echo "BACKEND_BRANCH=${BACKEND_BRANCH}"
+echo "BACKEND_IMAGE_TAG=${BACKEND_IMAGE_TAG}"
+echo "BACKEND_DOCKERFILE_PATH=${BACKEND_DOCKERFILE_PATH}"
+echo "BACKEND_BUILD_CONTEXT=${BACKEND_BUILD_CONTEXT}"
 echo "MONITORING_ENABLED=${MONITORING_ENABLED}"
 echo "GRAFANA_RELEASE_NAME=${GRAFANA_RELEASE_NAME}"
 echo "GRAFANA_SERVICE_NAME=${GRAFANA_SERVICE_NAME}"
 echo "GRAFANA_ADMIN_SECRET_NAME=${GRAFANA_ADMIN_SECRET_NAME}"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+ECR_REPOSITORY_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+BACKEND_FULL_IMAGE="${ECR_REPOSITORY_URI}:${BACKEND_IMAGE_TAG}"
+
 echo "ACCOUNT_ID=${ACCOUNT_ID}"
+echo "ECR_REGISTRY=${ECR_REGISTRY}"
+echo "ECR_REPOSITORY_URI=${ECR_REPOSITORY_URI}"
+echo "BACKEND_FULL_IMAGE=${BACKEND_FULL_IMAGE}"
 
 echo "===== Check IAM Role ====="
 aws sts get-caller-identity
@@ -55,7 +75,7 @@ echo "===== Set AWS Region ====="
 aws configure set default.region "${AWS_REGION}"
 
 echo "===== Check Required Commands ====="
-for cmd in aws eksctl kubectl helm jq curl; do
+for cmd in aws eksctl kubectl helm jq curl git; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "[ERROR] required command not found: $cmd"
     exit 1
@@ -74,6 +94,11 @@ REQUIRED_VARS=(
   MANIFEST_REPO_URL
   MANIFEST_PATH
   ARGOCD_APP_NAME
+  BACKEND_REPO_URL
+  BACKEND_BRANCH
+  BACKEND_IMAGE_TAG
+  BACKEND_DOCKERFILE_PATH
+  BACKEND_BUILD_CONTEXT
 )
 
 for var in "${REQUIRED_VARS[@]}"; do
@@ -82,6 +107,64 @@ for var in "${REQUIRED_VARS[@]}"; do
     exit 1
   fi
 done
+
+echo "===== Install / Start Docker ====="
+if ! command -v docker >/dev/null 2>&1; then
+  sudo dnf install -y docker
+fi
+
+sudo systemctl enable --now docker
+sudo usermod -aG docker ec2-user || true
+
+echo "===== Prepare ECR Repository ====="
+if ! aws ecr describe-repositories \
+  --region "${AWS_REGION}" \
+  --repository-names "${ECR_REPOSITORY}" >/dev/null 2>&1; then
+  echo "ECR repository not found. Creating: ${ECR_REPOSITORY}"
+  aws ecr create-repository \
+    --region "${AWS_REGION}" \
+    --repository-name "${ECR_REPOSITORY}" >/dev/null
+else
+  echo "ECR repository exists: ${ECR_REPOSITORY}"
+fi
+
+echo "===== ECR Login ====="
+aws ecr get-login-password --region "${AWS_REGION}" | \
+  sudo docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+echo "===== Clone / Update Backend Repository ====="
+if [ ! -d "${BACKEND_SOURCE_DIR}/.git" ]; then
+  rm -rf "${BACKEND_SOURCE_DIR}"
+  git clone -b "${BACKEND_BRANCH}" "${BACKEND_REPO_URL}" "${BACKEND_SOURCE_DIR}"
+else
+  cd "${BACKEND_SOURCE_DIR}"
+  git fetch origin
+  git checkout "${BACKEND_BRANCH}"
+  git pull origin "${BACKEND_BRANCH}"
+fi
+
+echo "===== Build Backend Docker Image ====="
+cd "${BACKEND_SOURCE_DIR}"
+
+sudo docker build \
+  -f "${BACKEND_DOCKERFILE_PATH}" \
+  -t "${ECR_REPOSITORY}:${BACKEND_IMAGE_TAG}" \
+  "${BACKEND_BUILD_CONTEXT}"
+
+sudo docker tag \
+  "${ECR_REPOSITORY}:${BACKEND_IMAGE_TAG}" \
+  "${BACKEND_FULL_IMAGE}"
+
+echo "===== Push Backend Docker Image to ECR ====="
+sudo docker push "${BACKEND_FULL_IMAGE}"
+
+echo "===== Verify ECR Image ====="
+aws ecr describe-images \
+  --region "${AWS_REGION}" \
+  --repository-name "${ECR_REPOSITORY}" \
+  --image-ids imageTag="${BACKEND_IMAGE_TAG}" \
+  --query "imageDetails[0].[repositoryName,imageTags,imagePushedAt,imageSizeInBytes]" \
+  --output table
 
 echo "===== Discover VPC/Subnets ====="
 VPC_ID="$(aws ec2 describe-vpcs \
@@ -416,6 +499,9 @@ spec:
     repoURL: ${MANIFEST_REPO_URL}
     targetRevision: main
     path: ${MANIFEST_PATH}
+    kustomize:
+      images:
+        - vamserlike-backend=${BACKEND_FULL_IMAGE}
 
   destination:
     server: https://kubernetes.default.svc
@@ -431,8 +517,47 @@ EOF
 
 kubectl apply -f "${HOME}/vamserlike-backend-argocd-app.yaml"
 
-echo "===== Wait for Backend Pods ====="
+echo "===== Wait for Argo CD Application Sync ====="
 for i in {1..40}; do
+  APP_SYNC_STATUS="$(kubectl get application "${ARGOCD_APP_NAME}" -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+  APP_HEALTH_STATUS="$(kubectl get application "${ARGOCD_APP_NAME}" -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+
+  echo "ArgoCD App status ${i}/40: sync=${APP_SYNC_STATUS}, health=${APP_HEALTH_STATUS}"
+
+  if [ "${APP_SYNC_STATUS}" = "Synced" ]; then
+    break
+  fi
+
+  sleep 15
+done
+
+echo "===== Wait for Backend Deployment Created ====="
+for i in {1..40}; do
+  if kubectl get deployment vamserlike-backend -n vamserlike >/dev/null 2>&1; then
+    echo "Backend deployment found."
+    break
+  fi
+
+  echo "Waiting for backend deployment... ${i}/40"
+  kubectl get all -n vamserlike || true
+  sleep 15
+done
+
+echo "===== Ensure Backend Deployment Uses Current Account ECR Image ====="
+kubectl set image deployment/vamserlike-backend \
+  vamserlike-backend="${BACKEND_FULL_IMAGE}" \
+  -n vamserlike || true
+
+kubectl annotate deployment/vamserlike-backend \
+  -n vamserlike \
+  vamserlike/backend-image="${BACKEND_FULL_IMAGE}" \
+  --overwrite || true
+
+echo "===== Wait for Backend Rollout ====="
+kubectl rollout status deployment/vamserlike-backend -n vamserlike --timeout=600s || true
+
+echo "===== Wait for Backend Pods ====="
+for i in {1..60}; do
   READY_PODS="$(kubectl get pods -n vamserlike -l app=vamserlike-backend --no-headers 2>/dev/null | awk '$2 ~ /^1\/1/ && $3 == "Running" {count++} END {print count+0}')"
 
   if [ "$READY_PODS" -ge 1 ]; then
@@ -440,8 +565,9 @@ for i in {1..40}; do
     break
   fi
 
-  echo "Waiting for backend pods... ${i}/40"
+  echo "Waiting for backend pods... ${i}/60"
   kubectl get pods -n vamserlike || true
+  kubectl describe pods -n vamserlike -l app=vamserlike-backend | tail -120 || true
   sleep 15
 done
 
@@ -484,8 +610,8 @@ done
 echo "===== Check Backend Health ====="
 HEALTH_OK="false"
 
-for i in {1..20}; do
-  echo "Health check try ${i}/20"
+for i in {1..30}; do
+  echo "Health check try ${i}/30"
   if curl -fsS "http://${BACKEND_ALB}/api/health"; then
     echo
     HEALTH_OK="true"
@@ -493,6 +619,8 @@ for i in {1..20}; do
   fi
 
   echo
+  echo "Current backend pods:"
+  kubectl get pods -n vamserlike || true
   sleep 15
 done
 
@@ -500,7 +628,9 @@ if [ "$HEALTH_OK" != "true" ]; then
   echo "[ERROR] Backend health check failed."
   echo "Check target health and pod logs:"
   echo "kubectl get pods -n vamserlike"
+  echo "kubectl describe pods -n vamserlike -l app=vamserlike-backend"
   echo "kubectl logs -n vamserlike -l app=vamserlike-backend --tail=100"
+  echo "kubectl describe ingress vamserlike-backend-ingress -n vamserlike"
   exit 1
 fi
 
@@ -514,6 +644,7 @@ fi
 echo "Argo CD URL: http://${ARGOCD_LB}"
 echo "Argo CD ID : admin"
 echo "Argo CD PW : ${ARGOCD_PW}"
+echo "Backend Image: ${BACKEND_FULL_IMAGE}"
 echo "Backend ALB: http://${BACKEND_ALB}"
 echo "Backend Root: http://${BACKEND_ALB}/"
 echo "Backend Swagger: http://${BACKEND_ALB}/swagger"
@@ -529,11 +660,13 @@ echo ""
 echo "Check commands:"
 echo "kubectl get applications -n argocd"
 echo "kubectl get pods -n vamserlike"
+echo "kubectl get deployment vamserlike-backend -n vamserlike -o wide"
 echo "kubectl get ingress -n vamserlike"
 echo "kubectl get pods -n amazon-cloudwatch"
 echo "kubectl get pods -n monitoring"
 echo "kubectl get svc -n monitoring"
 echo "kubectl get secret vamserlike-cognito-secret -n vamserlike -o yaml"
+echo "aws ecr describe-images --region ${AWS_REGION} --repository-name ${ECR_REPOSITORY} --output table"
 echo "aws logs describe-log-groups --region ${AWS_REGION} --log-group-name-prefix /ec2/vamserlike-backend"
 
 echo "===== Vamserlike Bootstrap Done ====="

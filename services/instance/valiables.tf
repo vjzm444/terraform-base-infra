@@ -1,7 +1,7 @@
 #반드시 바꿔야함.
 variable "key_name" {
   description = "EC2 인스턴스에 사용할 키 페어 이름"
-  default     = "thdguswn0005_seoul_v2"
+  default     = "pgy5519"
 }
 
 variable "server_port" {

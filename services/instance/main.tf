@@ -1,17 +1,28 @@
-provider "aws" {
-  region  = "ap-northeast-2"
-  version = ">= 5.50, < 6.0"
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.50, < 6.0"
+    }
+  }
 }
 
+provider "aws" {
+  region = "ap-northeast-2"
+}
 
+# =========================================================
 # 1. VPC
+# =========================================================
 resource "aws_vpc" "lz_vpc" {
   cidr_block           = "10.40.0.0/16"
   enable_dns_hostnames = true
   tags                 = { Name = "NATInstance-VPC1" }
 }
 
-# 서브넷
+# =========================================================
+# 2. Subnets
+# =========================================================
 resource "aws_subnet" "public_subnet" {
   vpc_id                  = aws_vpc.lz_vpc.id
   cidr_block              = "10.40.1.0/24"
@@ -34,6 +45,7 @@ resource "aws_subnet" "private_subnet" {
   availability_zone = "ap-northeast-2a"
   tags              = { Name = "Private-Subnet-2a" }
 }
+
 resource "aws_subnet" "private_subnet2" {
   vpc_id            = aws_vpc.lz_vpc.id
   cidr_block        = "10.40.4.0/24"
@@ -41,192 +53,30 @@ resource "aws_subnet" "private_subnet2" {
   tags              = { Name = "Private-Subnet-2c" }
 }
 
-# 2. 인터넷 게이트웨이 및 라우팅
+# =========================================================
+# 3. Internet Gateway / Public Route Table
+# =========================================================
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.lz_vpc.id
+
+  tags = {
+    Name = "NATInstance-IGW"
+  }
 }
 
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.lz_vpc.id
+
   route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
+
+  tags = {
+    Name = "Public-Route-Table"
+  }
 }
 
-
-# 쿠버네티스 실행전용 인스턴스
-resource "aws_instance" "k8s_manager_instance" {
-  ami                    = "ami-0d4c056a16f3ae150"
-  instance_type          = "t3.medium"
-  subnet_id              = aws_subnet.public_subnet2.id
-  vpc_security_group_ids = [aws_security_group.k8s_sg.id]
-  key_name               = var.key_name
-
-
-  user_data = <<-EOF
-              #!/bin/bash
-              set -ex
-
-              # 쿠버네티스 라이브러리 설치
-              # git 추가: K8s Manager EC2에서 terraform-base-infra repo clone/pull 하기 위함
-              sudo dnf install -y unzip jq bash-completion git
-              sudo dnf install -y unzip jq bash-completion
-              curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl
-              chmod +x ./kubectl
-              sudo mv ./kubectl /usr/local/bin/kubectl
-              curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-              sudo mv /tmp/eksctl /usr/local/bin
-
-              # 기본리젼 환경값 셋팅
-              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-              export AWS_REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
-              
-              
-              echo "export AWS_REGION=$${AWS_REGION}" | tee -a ~/.bash_profile
-              aws configure set default.region $${AWS_REGION}
-              
-              
-              hostnamectl --static set-hostname k8s-public
-              
-              # 헬름 라이브러리 미리 설치
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-              helm repo add eks https://aws.github.io/eks-charts
-              helm repo update
-
-
-              # 1. kubectl에서 필요한 임시파일 2개생성.
-              
-              cat << 'EKS_EOF' > /home/ec2-user/eks-demo-cluster.yaml
-              apiVersion: eksctl.io/v1alpha5
-              kind: ClusterConfig
-              metadata:
-                name: eks-demo
-                region: ap-northeast-2
-                version: "1.30"
-              vpc:
-                id: "${aws_vpc.lz_vpc.id}"
-                subnets:
-                  private:
-                    ap-northeast-2a: { id: "${aws_subnet.private_subnet.id}" }
-                    ap-northeast-2c: { id: "${aws_subnet.private_subnet2.id}" }
-                  public:
-                    ap-northeast-2a: { id: "${aws_subnet.public_subnet.id}" }
-                    ap-northeast-2c: { id: "${aws_subnet.public_subnet2.id}" }
-              managedNodeGroups:
-                - name: node-group
-                  instanceType: t3.medium
-                  desiredCapacity: 2
-                  privateNetworking: true
-              EKS_EOF
-
-
-
-              cat << 'APP_EOF' > /home/ec2-user/backend-app.yaml
-              apiVersion: apps/v1
-              kind: Deployment
-              metadata:
-                name: flask-backend
-              spec:
-                replicas: 2
-                selector:
-                  matchLabels:
-                    app: flask-backend
-                template:
-                  metadata:
-                    labels:
-                      app: flask-backend
-                  spec:
-                    containers:
-                    - name: nginx
-                      image: nginx:alpine
-                      ports:
-                      - containerPort: 80
-              ---
-              apiVersion: v1
-              kind: Service
-              metadata:
-                name: flask-backend-service
-                annotations:
-                  service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-                  service.beta.kubernetes.io/aws-load-balancer-type: "alb"
-                  service.beta.kubernetes.io/aws-load-balancer-subnets: "${aws_subnet.public_subnet.id}, ${aws_subnet.public_subnet2.id}"
-              spec:
-                type: LoadBalancer
-                selector:
-                  app: flask-backend
-                ports:
-                  - port: 80
-                    targetPort: 80
-              APP_EOF
-
-              chown ec2-user:ec2-user /home/ec2-user/eks-demo-cluster.yaml /home/ec2-user/backend-app.yaml
-              
-              EOF
-
-  tags = { Name = "K8s-Manager-EC2" }
-}
-
-
-
-
-# 3. NAT 인스턴스 (배스천 인스턴스)
-resource "aws_instance" "nat_bastion_instance" {
-  ami           = "ami-0d4c056a16f3ae150"
-  instance_type = "t3.micro"
-  subnet_id     = aws_subnet.public_subnet.id
-  key_name      = var.key_name
-
-  # ★ 핵심: 패킷 포워딩 필수
-  source_dest_check      = false
-  vpc_security_group_ids = [aws_security_group.nat_sg.id]
-
-  user_data = <<-EOF
-    #!/bin/bash
-    hostnamectl --static set-hostname Seoul-public
-
-    # 1. IP 포워딩 활성화
-    sysctl -w net.ipv4.ip_forward=1
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-
-    # 2. 서비스 설치
-    dnf install -y iptables-services
-
-    # 3. FORWARD 정책 변경
-    iptables -P FORWARD ACCEPT
-
-    # 4. 동적 마스커레이딩
-    IFACE=$(ip route show default | awk '/default/ {print $5; exit}')
-    iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
-
-    # 5. 설정 저장 및 서비스 시작
-    service iptables save
-    systemctl enable --now iptables
-  EOF
-
-  tags = { Name = "NAT-Instance-EC2" }
-}
-
-
-# 2. 라우트 테이블 (인스턴스 생성 후 생성되도록 확실한 의존성 부여)
-resource "aws_route_table" "private_rt" {
-  vpc_id = aws_vpc.lz_vpc.id
-  tags   = { Name = "Private-Route-Table" }
-}
-
-
-// private 서브넷 -> public NAT 인스턴스로 지정
-resource "aws_route" "private_nat_route" {
-  route_table_id         = aws_route_table.private_rt.id
-  destination_cidr_block = "0.0.0.0/0"
-
-  network_interface_id = aws_instance.nat_bastion_instance.primary_network_interface_id
-
-  depends_on = [aws_instance.nat_bastion_instance]
-}
-
-
-# 라우트 테이블에 a, c 모두 연결
 resource "aws_route_table_association" "public_assoc_a" {
   subnet_id      = aws_subnet.public_subnet.id
   route_table_id = aws_route_table.public_rt.id
@@ -237,7 +87,253 @@ resource "aws_route_table_association" "public_assoc_c" {
   route_table_id = aws_route_table.public_rt.id
 }
 
-# 프라이빗 라우트 테이블에 a, c 모두 연결
+# =========================================================
+# 4. K8s Manager EC2
+#
+# 목적:
+# - Terraform이 SSH 접속하지 않음
+# - 로컬 pem 경로 필요 없음
+# - EC2 user_data가 직접 git clone
+# - EC2 접속 후 바로 아래 명령어 사용
+#   ./show-vamserlike-env.sh
+#   ./bootstrap-vamserlike.sh
+#   ./cleanup-vamserlike.sh
+# =========================================================
+resource "aws_instance" "k8s_manager_instance" {
+  ami                    = "ami-0d4c056a16f3ae150"
+  instance_type          = "t3.medium"
+  subnet_id              = aws_subnet.public_subnet2.id
+  vpc_security_group_ids = [aws_security_group.k8s_sg.id]
+  key_name               = var.key_name
+
+  # k8s-manager-iam-and-tags.tf에 정의된 Instance Profile 사용
+  iam_instance_profile = aws_iam_instance_profile.eksworkspace_admin_profile.name
+
+  depends_on = [
+    aws_iam_instance_profile.eksworkspace_admin_profile,
+    aws_iam_role_policy_attachment.eksworkspace_admin_attach,
+    aws_cognito_user_pool.vamserlike_user_pool,
+    aws_cognito_user_pool_client.vamserlike_app_client,
+    aws_ecr_repository.vamserlike_backend
+  ]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              set -euxo pipefail
+
+              hostnamectl --static set-hostname k8s-public
+
+              # 기본 패키지 설치
+              dnf update -y
+              dnf install -y unzip jq bash-completion git tar gzip curl awscli
+
+              # kubectl 설치
+              curl -fsSL -o /tmp/kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl
+              chmod +x /tmp/kubectl
+              mv /tmp/kubectl /usr/local/bin/kubectl
+
+              # eksctl 설치
+              curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+              mv /tmp/eksctl /usr/local/bin/eksctl
+
+              # helm 설치
+              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              helm repo add eks https://aws.github.io/eks-charts || true
+              helm repo update
+
+              # 기본 리전 설정
+              TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              AWS_REGION=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')
+
+              echo "export AWS_REGION=$AWS_REGION" >> /home/ec2-user/.bash_profile
+              aws configure set default.region "$AWS_REGION"
+
+              # terraform-base-infra repo 자동 clone
+              cd /home/ec2-user
+
+              if [ ! -d /home/ec2-user/terraform-base-infra/.git ]; then
+                sudo -u ec2-user git clone https://github.com/vjzm444/terraform-base-infra.git /home/ec2-user/terraform-base-infra
+              else
+                cd /home/ec2-user/terraform-base-infra
+                sudo -u ec2-user git pull --ff-only || true
+              fi
+
+              INSTANCE_DIR="/home/ec2-user/terraform-base-infra/services/instance"
+              mkdir -p "$INSTANCE_DIR/scripts"
+
+              # Windows CRLF 방지 및 실행 권한 정리
+              sed -i 's/\r$//' "$INSTANCE_DIR"/scripts/*.sh "$INSTANCE_DIR"/scripts/vamserlike.env.example 2>/dev/null || true
+              chmod +x "$INSTANCE_DIR"/scripts/*.sh 2>/dev/null || true
+
+              # 실제 실행용 env 자동 생성
+              cat > "$INSTANCE_DIR/scripts/vamserlike.env" <<'VAMSERLIKE_ENV_EOF'
+# =========================================================
+# Vamserlike Auto Generated Environment
+# Generated by Terraform main.tf user_data
+# =========================================================
+
+AWS_REGION=ap-northeast-2
+CLUSTER_NAME=eks-demo
+NODEGROUP_NAME=vamserlike-node-group
+VPC_CIDR=10.40.0.0/16
+ECR_REPOSITORY=vamserlike-backend
+
+PUBLIC_SUBNET_2A_NAME=Public-Subnet-2a
+PUBLIC_SUBNET_2C_NAME=Public-Subnet-2c
+PRIVATE_SUBNET_2A_NAME=Private-Subnet-2a
+PRIVATE_SUBNET_2C_NAME=Private-Subnet-2c
+
+# Cognito values are generated by Terraform automatically
+COGNITO_USER_POOL_ID=${aws_cognito_user_pool.vamserlike_user_pool.id}
+COGNITO_CLIENT_ID=${aws_cognito_user_pool_client.vamserlike_app_client.id}
+
+# DB 부분은 장한결 RDS / HAProxy 구성 완료 후 필요하면 이 줄만 수정
+MYSQL_CONNECTION_STRING='Server=CHANGE_ME;Port=3306;Database=vamserlike;User=CHANGE_ME;Password=CHANGE_ME;SslMode=Preferred;AllowPublicKeyRetrieval=True;'
+
+# Backend image build / push
+# bootstrap-vamserlike.sh가 이 값을 사용해서 현재 AWS 계정 ECR에 이미지 push
+BACKEND_REPO_URL=https://github.com/rlduddl/Vamserlike-backend.git
+BACKEND_BRANCH=rlduddl5519
+BACKEND_IMAGE_TAG=latest
+BACKEND_DOCKERFILE_PATH=Dockerfile
+BACKEND_BUILD_CONTEXT=.
+
+MANIFEST_REPO_URL=https://github.com/rlduddl/Vamserlike-k8s-manifests.git
+MANIFEST_PATH=overlays/dev
+ARGOCD_APP_NAME=vamserlike-backend
+
+MONITORING_ENABLED=true
+GRAFANA_ADMIN_PASSWORD='Vamserlike123!'
+GRAFANA_RELEASE_NAME=vamserlike-monitoring
+GRAFANA_ADMIN_SECRET_NAME=vamserlike-grafana-admin
+
+BACKEND_LOG_GROUP_NAME=/ec2/vamserlike-backend
+DELETE_CLOUDWATCH_LOG_GROUP=false
+VAMSERLIKE_ENV_EOF
+
+              # 홈 디렉터리 실행용 바로가기 생성
+              cat > /home/ec2-user/bootstrap-vamserlike.sh <<'RUN_BOOTSTRAP_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/ec2-user/terraform-base-infra/services/instance
+bash scripts/bootstrap-vamserlike.sh
+RUN_BOOTSTRAP_EOF
+
+              cat > /home/ec2-user/cleanup-vamserlike.sh <<'RUN_CLEANUP_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/ec2-user/terraform-base-infra/services/instance
+bash scripts/cleanup-vamserlike.sh
+RUN_CLEANUP_EOF
+
+              cat > /home/ec2-user/show-vamserlike-env.sh <<'SHOW_ENV_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat /home/ec2-user/terraform-base-infra/services/instance/scripts/vamserlike.env
+SHOW_ENV_EOF
+
+              cat > /home/ec2-user/VAMSERLIKE_README.txt <<'README_EOF'
+Vamserlike K8s Manager EC2
+
+terraform apply 후 이 EC2에 접속하면 아래 명령어만 사용하면 됩니다.
+
+1. 자동 생성 env 확인
+   ./show-vamserlike-env.sh
+
+2. DB 연결 문자열만 필요 시 수정
+   vi ~/terraform-base-infra/services/instance/scripts/vamserlike.env
+
+3. EKS / Argo CD / Backend Image Build/Push / Backend ALB 배포
+   ./bootstrap-vamserlike.sh
+
+4. Kubernetes/EKS 자원 정리
+   ./cleanup-vamserlike.sh
+
+주의:
+API Gateway는 Backend ALB 생성 후 2차 Terraform 작업에서 구성합니다.
+README_EOF
+
+              chmod +x /home/ec2-user/bootstrap-vamserlike.sh
+              chmod +x /home/ec2-user/cleanup-vamserlike.sh
+              chmod +x /home/ec2-user/show-vamserlike-env.sh
+
+              chown -R ec2-user:ec2-user /home/ec2-user/terraform-base-infra
+              chown ec2-user:ec2-user /home/ec2-user/bootstrap-vamserlike.sh /home/ec2-user/cleanup-vamserlike.sh /home/ec2-user/show-vamserlike-env.sh /home/ec2-user/VAMSERLIKE_README.txt
+
+              # 문법 검사
+              bash -n "$INSTANCE_DIR/scripts/bootstrap-vamserlike.sh" || true
+              bash -n "$INSTANCE_DIR/scripts/cleanup-vamserlike.sh" || true
+              bash -n /home/ec2-user/bootstrap-vamserlike.sh
+              bash -n /home/ec2-user/cleanup-vamserlike.sh
+
+              echo "===== Vamserlike K8s Manager user_data completed ====="
+              echo "Commands:"
+              echo "./show-vamserlike-env.sh"
+              echo "./bootstrap-vamserlike.sh"
+              echo "./cleanup-vamserlike.sh"
+              EOF
+
+  tags = { Name = "K8s-Manager-EC2" }
+}
+
+# =========================================================
+# 5. NAT Instance
+# =========================================================
+resource "aws_instance" "nat_bastion_instance" {
+  ami           = "ami-0d4c056a16f3ae150"
+  instance_type = "t3.micro"
+  subnet_id     = aws_subnet.public_subnet.id
+  key_name      = var.key_name
+
+  # 핵심: 패킷 포워딩 필수
+  source_dest_check      = false
+  vpc_security_group_ids = [aws_security_group.nat_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              set -euxo pipefail
+
+              hostnamectl --static set-hostname Seoul-public
+
+              # 1. IP 포워딩 활성화
+              sysctl -w net.ipv4.ip_forward=1
+              echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+              # 2. 서비스 설치
+              dnf install -y iptables-services
+
+              # 3. FORWARD 정책 변경
+              iptables -P FORWARD ACCEPT
+
+              # 4. 동적 마스커레이딩
+              IFACE=$(ip route show default | awk '/default/ {print $5; exit}')
+              iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+
+              # 5. 설정 저장 및 서비스 시작
+              service iptables save
+              systemctl enable --now iptables
+              EOF
+
+  tags = { Name = "NAT-Instance-EC2" }
+}
+
+# =========================================================
+# 6. Private Route Table / NAT Route
+# =========================================================
+resource "aws_route_table" "private_rt" {
+  vpc_id = aws_vpc.lz_vpc.id
+  tags   = { Name = "Private-Route-Table" }
+}
+
+resource "aws_route" "private_nat_route" {
+  route_table_id         = aws_route_table.private_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+
+  network_interface_id = aws_instance.nat_bastion_instance.primary_network_interface_id
+
+  depends_on = [aws_instance.nat_bastion_instance]
+}
+
 resource "aws_route_table_association" "private_assoc_a" {
   subnet_id      = aws_subnet.private_subnet.id
   route_table_id = aws_route_table.private_rt.id
@@ -248,13 +344,11 @@ resource "aws_route_table_association" "private_assoc_c" {
   route_table_id = aws_route_table.private_rt.id
 }
 
-
-# region VPC & Subnets
-
-
-// 2. 보안그룹 수정 (숫자형으로 변경)
+# =========================================================
+# 7. Security Groups
+# =========================================================
 resource "aws_security_group" "nat_sg" {
-  name   = var.nat_sg_name # 변수 적용
+  name   = var.nat_sg_name
   vpc_id = aws_vpc.lz_vpc.id
 
   ingress {
@@ -279,11 +373,9 @@ resource "aws_security_group" "nat_sg" {
   }
 }
 
-// 쿠버네티스용 보안그룹 (관리 및 트래픽 통신용)
 resource "aws_security_group" "k8s_sg" {
   name   = var.k8s_sg_name
   vpc_id = aws_vpc.lz_vpc.id
-
 
   ingress {
     from_port   = 22
@@ -306,8 +398,7 @@ resource "aws_security_group" "k8s_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  // 쿠버네티스 API 및 노드 간 통신을 위한 포트
-  // EKS 사용 시 노드 간의 통신이 원활해야 함
+  # 쿠버네티스 API 및 노드 간 통신을 위한 포트
   ingress {
     from_port   = 10250
     to_port     = 10250
@@ -315,7 +406,7 @@ resource "aws_security_group" "k8s_sg" {
     cidr_blocks = ["10.40.0.0/16"]
   }
 
-  // 노드 간 UDP 통신 (Flannel/Calico 등의 CNI 사용 시 필요)
+  # 노드 간 UDP 통신
   ingress {
     from_port   = 4789
     to_port     = 4789
@@ -330,4 +421,3 @@ resource "aws_security_group" "k8s_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
-# endregion
