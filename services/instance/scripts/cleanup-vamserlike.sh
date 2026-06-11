@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export AWS_PAGER=""
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/vamserlike.env"
 
@@ -42,7 +44,7 @@ DELETE_CLOUDWATCH_LOG_GROUP="${DELETE_CLOUDWATCH_LOG_GROUP:-false}"
 BACKEND_LOG_GROUP_NAME="${BACKEND_LOG_GROUP_NAME:-/ec2/vamserlike-backend}"
 
 VPC_ID="${VPC_ID:-}"
-ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+ACCOUNT_ID="$(timeout 15 aws sts get-caller-identity --query Account --output text --no-cli-pager 2>/dev/null || true)"
 
 if [ -n "${ACCOUNT_ID}" ]; then
   ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -78,7 +80,7 @@ echo "===== Set AWS Region ====="
 aws configure set default.region "${AWS_REGION}" || true
 
 echo "===== Check AWS Identity ====="
-aws sts get-caller-identity || true
+aws sts get-caller-identity --no-cli-pager || true
 
 echo "===== Check EKS Cluster Exists ====="
 if aws eks describe-cluster --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
@@ -148,67 +150,107 @@ cleanup_leftover_k8s_security_groups() {
     return 0
   fi
 
-  echo "===== Cleanup Leftover Kubernetes LoadBalancer Security Groups ====="
+  echo "===== SAFE Cleanup Leftover Kubernetes LoadBalancer Security Groups ====="
+  echo "VPC_ID=${VPC_ID}"
+
+  echo "Collect security groups attached to active EC2 instances. These will be skipped."
+
+  ACTIVE_EC2_SG_IDS="$(aws ec2 describe-instances \
+    --region "${AWS_REGION}" \
+    --filters \
+      "Name=vpc-id,Values=${VPC_ID}" \
+      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+    --query 'Reservations[].Instances[].SecurityGroups[].GroupId' \
+    --output text 2>/dev/null || true)"
+
+  echo "ACTIVE_EC2_SG_IDS=${ACTIVE_EC2_SG_IDS}"
 
   K8S_SECURITY_GROUPS="$(aws ec2 describe-security-groups \
     --region "${AWS_REGION}" \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
-    --query "SecurityGroups[?GroupName!='default' && starts_with(GroupName, 'k8s-')].GroupId" \
+    --query "SecurityGroups[?GroupName!='default' && starts_with(GroupName, 'k8s-')].[GroupId,GroupName,Description]" \
     --output text 2>/dev/null || true)"
 
   if [ -z "${K8S_SECURITY_GROUPS}" ] || [ "${K8S_SECURITY_GROUPS}" = "None" ]; then
     echo "No leftover k8s security groups found."
-  else
-    for SG_ID in ${K8S_SECURITY_GROUPS}; do
-      echo "Cleaning security group: ${SG_ID}"
-
-      INGRESS_RULE_IDS="$(aws ec2 describe-security-group-rules \
-        --region "${AWS_REGION}" \
-        --filters "Name=group-id,Values=${SG_ID}" \
-        --query 'SecurityGroupRules[?IsEgress==`false`].SecurityGroupRuleId' \
-        --output text 2>/dev/null || true)"
-
-      if [ -n "${INGRESS_RULE_IDS}" ] && [ "${INGRESS_RULE_IDS}" != "None" ]; then
-        for RULE_ID in ${INGRESS_RULE_IDS}; do
-          echo "Revoke ingress rule: ${RULE_ID}"
-          aws ec2 revoke-security-group-ingress \
-            --region "${AWS_REGION}" \
-            --group-id "${SG_ID}" \
-            --security-group-rule-ids "${RULE_ID}" || true
-        done
-      fi
-
-      EGRESS_RULE_IDS="$(aws ec2 describe-security-group-rules \
-        --region "${AWS_REGION}" \
-        --filters "Name=group-id,Values=${SG_ID}" \
-        --query 'SecurityGroupRules[?IsEgress==`true`].SecurityGroupRuleId' \
-        --output text 2>/dev/null || true)"
-
-      if [ -n "${EGRESS_RULE_IDS}" ] && [ "${EGRESS_RULE_IDS}" != "None" ]; then
-        for RULE_ID in ${EGRESS_RULE_IDS}; do
-          echo "Revoke egress rule: ${RULE_ID}"
-          aws ec2 revoke-security-group-egress \
-            --region "${AWS_REGION}" \
-            --group-id "${SG_ID}" \
-            --security-group-rule-ids "${RULE_ID}" || true
-        done
-      fi
-
-      echo "Delete security group: ${SG_ID}"
-
-      for attempt in {1..10}; do
-        if aws ec2 delete-security-group \
-          --region "${AWS_REGION}" \
-          --group-id "${SG_ID}"; then
-          echo "Deleted security group: ${SG_ID}"
-          break
-        fi
-
-        echo "Retry delete security group ${SG_ID}... ${attempt}/10"
-        sleep 10
-      done
-    done
+    return 0
   fi
+
+  echo "Candidate k8s security groups:"
+  echo "${K8S_SECURITY_GROUPS}"
+
+  echo "${K8S_SECURITY_GROUPS}" | while read -r SG_ID SG_NAME SG_DESC_REST; do
+    [ -z "${SG_ID}" ] && continue
+
+    echo "----- Check security group: ${SG_ID} (${SG_NAME}) -----"
+
+    # 현재 실행/정지 중인 EC2에 붙어 있는 Security Group은 절대 건드리지 않음.
+    # K8s-Manager-EC2 / NAT-Instance-EC2 SSH 끊김 방지.
+    if echo " ${ACTIVE_EC2_SG_IDS} " | grep -q " ${SG_ID} "; then
+      echo "[SKIP] ${SG_ID} is attached to an active EC2 instance. Do not revoke or delete."
+      continue
+    fi
+
+    # ENI에 아직 붙어 있으면 삭제 대상이 아니므로 rule revoke도 하지 않음.
+    ENI_COUNT="$(aws ec2 describe-network-interfaces \
+      --region "${AWS_REGION}" \
+      --filters "Name=group-id,Values=${SG_ID}" \
+      --query 'length(NetworkInterfaces)' \
+      --output text 2>/dev/null || echo 0)"
+
+    if [ "${ENI_COUNT}" != "0" ]; then
+      echo "[SKIP] ${SG_ID} is still attached to ${ENI_COUNT} network interface(s). Wait or delete related resource first."
+      continue
+    fi
+
+    echo "Safe to clean security group: ${SG_ID}"
+
+    INGRESS_RULE_IDS="$(aws ec2 describe-security-group-rules \
+      --region "${AWS_REGION}" \
+      --filters "Name=group-id,Values=${SG_ID}" \
+      --query 'SecurityGroupRules[?IsEgress==`false`].SecurityGroupRuleId' \
+      --output text 2>/dev/null || true)"
+
+    if [ -n "${INGRESS_RULE_IDS}" ] && [ "${INGRESS_RULE_IDS}" != "None" ]; then
+      for RULE_ID in ${INGRESS_RULE_IDS}; do
+        echo "Revoke ingress rule: ${RULE_ID}"
+        aws ec2 revoke-security-group-ingress \
+          --region "${AWS_REGION}" \
+          --group-id "${SG_ID}" \
+          --security-group-rule-ids "${RULE_ID}" || true
+      done
+    fi
+
+    EGRESS_RULE_IDS="$(aws ec2 describe-security-group-rules \
+      --region "${AWS_REGION}" \
+      --filters "Name=group-id,Values=${SG_ID}" \
+      --query 'SecurityGroupRules[?IsEgress==`true`].SecurityGroupRuleId' \
+      --output text 2>/dev/null || true)"
+
+    if [ -n "${EGRESS_RULE_IDS}" ] && [ "${EGRESS_RULE_IDS}" != "None" ]; then
+      for RULE_ID in ${EGRESS_RULE_IDS}; do
+        echo "Revoke egress rule: ${RULE_ID}"
+        aws ec2 revoke-security-group-egress \
+          --region "${AWS_REGION}" \
+          --group-id "${SG_ID}" \
+          --security-group-rule-ids "${RULE_ID}" || true
+      done
+    fi
+
+    echo "Delete security group: ${SG_ID}"
+
+    for attempt in {1..10}; do
+      if aws ec2 delete-security-group \
+        --region "${AWS_REGION}" \
+        --group-id "${SG_ID}"; then
+        echo "Deleted security group: ${SG_ID}"
+        break
+      fi
+
+      echo "Retry delete security group ${SG_ID}... ${attempt}/10"
+      sleep 10
+    done
+  done
 
   echo "===== Remaining Security Groups In VPC ====="
   aws ec2 describe-security-groups \
