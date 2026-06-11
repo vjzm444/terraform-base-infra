@@ -1,0 +1,430 @@
+{
+  "widgets": [
+    {
+      "type": "text",
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 2,
+      "properties": {
+        "markdown": "# Vamserlike WAF 차단 검증 대시보드\nWeb ACL: **vamserlike-backend-acl** · Region: **ap-northeast-2** · 지표=BlockedRequests(Sum, 1분). 테스트 실행 후 2~3분 뒤 반영됩니다."
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 2,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "전체 요청 (Allowed vs Blocked)",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "ap-northeast-2",
+        "stat": "Sum",
+        "period": 60,
+        "metrics": [
+          [
+            "AWS/WAFV2",
+            "AllowedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "ALL",
+            {
+              "label": "Allowed",
+              "color": "#2ca02c"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "ALL",
+            {
+              "label": "Blocked",
+              "color": "#d62728"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 2,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "케이스별 차단 건수 (BlockedRequests / Rule)",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "ap-northeast-2",
+        "stat": "Sum",
+        "period": 60,
+        "metrics": [
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case1-geo-allowlist",
+            {
+              "label": "case1-geo-allowlist"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case2-rate-ranking",
+            {
+              "label": "case2-rate-ranking"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case2-rate-unlock",
+            {
+              "label": "case2-rate-unlock"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case3-rate-progress",
+            {
+              "label": "case3-rate-progress"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case4-aws-common-ruleset",
+            {
+              "label": "case4-aws-common-ruleset"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case4-aws-sqli-ruleset",
+            {
+              "label": "case4-aws-sqli-ruleset"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case5-body-size-limit",
+            {
+              "label": "case5-body-size-limit"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case6-rate-login",
+            {
+              "label": "case6-rate-login"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case7-rate-signup",
+            {
+              "label": "case7-rate-signup"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case8-block-tool-user-agents",
+            {
+              "label": "case8-block-tool-user-agents"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case9-aws-anonymous-ip",
+            {
+              "label": "case9-aws-anonymous-ip"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case10-aws-known-bad-inputs",
+            {
+              "label": "case10-aws-known-bad-inputs"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case10-log4j-jndi",
+            {
+              "label": "case10-log4j-jndi"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 8,
+      "width": 24,
+      "height": 4,
+      "properties": {
+        "title": "케이스별 누적 차단 수 (선택 기간 합계)",
+        "view": "singleValue",
+        "region": "ap-northeast-2",
+        "stat": "Sum",
+        "period": 300,
+        "metrics": [
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case1-geo-allowlist",
+            {
+              "label": "case1-geo-allowlist"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case2-rate-ranking",
+            {
+              "label": "case2-rate-ranking"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case2-rate-unlock",
+            {
+              "label": "case2-rate-unlock"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case3-rate-progress",
+            {
+              "label": "case3-rate-progress"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case4-aws-common-ruleset",
+            {
+              "label": "case4-aws-common-ruleset"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case4-aws-sqli-ruleset",
+            {
+              "label": "case4-aws-sqli-ruleset"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case5-body-size-limit",
+            {
+              "label": "case5-body-size-limit"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case6-rate-login",
+            {
+              "label": "case6-rate-login"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case7-rate-signup",
+            {
+              "label": "case7-rate-signup"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case8-block-tool-user-agents",
+            {
+              "label": "case8-block-tool-user-agents"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case9-aws-anonymous-ip",
+            {
+              "label": "case9-aws-anonymous-ip"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case10-aws-known-bad-inputs",
+            {
+              "label": "case10-aws-known-bad-inputs"
+            }
+          ],
+          [
+            "AWS/WAFV2",
+            "BlockedRequests",
+            "Region",
+            "ap-northeast-2",
+            "WebACL",
+            "vamserlike-backend-acl",
+            "Rule",
+            "case10-log4j-jndi",
+            {
+              "label": "case10-log4j-jndi"
+            }
+          ]
+        ]
+      }
+    }
+  ]
+}
