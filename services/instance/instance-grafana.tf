@@ -1,7 +1,6 @@
 
 
-//TODO: 인스턴스
-//          - 쿠버네티스에서 알아서 생성할것이게 임시 테스트용
+// 그라파나 백엔드 로그용 내부인스턴스
 
 
 // 인스턴스 private 백엔드용
@@ -42,6 +41,8 @@ resource "aws_instance" "private_Backend_test" {
               sudo ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
               docker-compose up -d --build
 
+              docker run -d --name=grafana -p 3000:3000 grafana/grafana:10.4.10
+              
               EOF
 
   tags          = { Name = "Private-Backend-Test-EC2" }
