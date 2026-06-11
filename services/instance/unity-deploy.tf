@@ -1,10 +1,3 @@
-# 현재 계정 정보를 가져옴
-data "aws_caller_identity" "current" {}
-
-# 계정 ID를 활용해 고유한 접두사 생성 (하드코딩 제거)
-locals {
-  account_id = data.aws_caller_identity.current.account_id
-}
 
 # 1. 아테나로 보낼 s3용(CloudFormation에서 사용예정)
 resource "aws_s3_bucket" "vamserlike-logs-bucket" {
@@ -92,32 +85,42 @@ resource "aws_iam_role" "pipeline_role" {
 
 resource "aws_iam_role_policy" "pipeline_policy" {
   name = "s3-access-policy"
-  role = aws_iam_role.pipeline_role.id # 깡통 역할을 여기서 바로 참조!
-  
+  role = aws_iam_role.pipeline_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        # S3와 CodeStar 연결 권한을 한 번에!
+        # S3 데이터 접근 + Git 연결 권한
         Effect = "Allow"
         Action = [
-          "s3:PutObject", 
-          "s3:GetObject", 
-          "s3:GetObjectVersion", 
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:GetObjectVersion",
           "s3:GetBucketVersioning",
           "codestar-connections:UseConnection"
         ]
         Resource = [
           "${aws_s3_bucket.artifact_bucket.arn}",
           "${aws_s3_bucket.artifact_bucket.arn}/*",
-          
-          # 배포 대상 버킷 참조
-          aws_s3_bucket.deploy_bucket.arn,
+          "${aws_s3_bucket.deploy_bucket.arn}",
           "${aws_s3_bucket.deploy_bucket.arn}/*",
-          
-          # 깃허브 연결 ARN 참조
           var.github_connection_arn
+        ]
+      },
+      {
+        # 파이프라인 제어 권한 (locals 활용)
+        Effect = "Allow"
+        Action = [
+          "codepipeline:GetPipeline",
+          "codepipeline:GetPipelineExecution",
+          "codepipeline:GetPipelineState",
+          "codepipeline:StartPipelineExecution",
+          "codepipeline:PutJobSuccessResult",
+          "codepipeline:PutJobFailureResult"
+        ]
+        Resource = [
+          "arn:aws:codepipeline:ap-northeast-2:${local.account_id}:unity-pipeline"
         ]
       }
     ]

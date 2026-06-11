@@ -31,3 +31,9 @@ output "cloudfront_domain_name" {
   description = "The domain name of the CloudFront distribution"
   value       = aws_cloudfront_distribution.s3_distribution.domain_name
 }
+
+# 로드밸런서이름 그냥보기위해서..(쿠버네티스꺼 적용하면지워야함)
+output "alb_dns_name" {
+  description = "The DNS name of the load balancer"
+  value       = aws_lb.alb.dns_name
+}

@@ -162,11 +162,10 @@ PUBLIC_SUBNET_2C_NAME=Public-Subnet-2c
 PRIVATE_SUBNET_2A_NAME=Private-Subnet-2a
 PRIVATE_SUBNET_2C_NAME=Private-Subnet-2c
 
-COGNITO_REGION=ap-northeast-2
 COGNITO_USER_POOL_ID=${aws_cognito_user_pool.vamserlike_user_pool.id}
 COGNITO_CLIENT_ID=${aws_cognito_user_pool_client.vamserlike_app_client.id}
 
-MYSQL_CONNECTION_STRING='Server=CHANGE_ME;Port=3306;Database=vamserlike;User=CHANGE_ME;Password=CHANGE_ME;SslMode=Preferred;AllowPublicKeyRetrieval=True;'
+MYSQL_CONNECTION_STRING='Server=CHANGE_ME;Port=3306;Database=vamserlike;User=admin;Password=CHANGE_ME;SslMode=Preferred;AllowPublicKeyRetrieval=True;'
 
 BACKEND_REPO_URL=https://github.com/rlduddl/Vamserlike-backend.git
 BACKEND_BRANCH=rlduddl5519

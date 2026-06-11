@@ -88,7 +88,6 @@ REQUIRED_VARS=(
   PUBLIC_SUBNET_2C_NAME
   PRIVATE_SUBNET_2A_NAME
   PRIVATE_SUBNET_2C_NAME
-  COGNITO_REGION
   COGNITO_USER_POOL_ID
   COGNITO_CLIENT_ID
   MYSQL_CONNECTION_STRING
@@ -447,7 +446,6 @@ kubectl create secret generic vamserlike-cognito-secret \
   -n vamserlike \
   --from-literal=userPoolId="${COGNITO_USER_POOL_ID}" \
   --from-literal=clientId="${COGNITO_CLIENT_ID}" \
-  --from-literal=region="${COGNITO_REGION}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "===== Install Argo CD ====="
