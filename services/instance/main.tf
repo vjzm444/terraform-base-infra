@@ -134,8 +134,11 @@ aws configure set default.region "$AWS_REGION"
 
 cd /home/ec2-user
 
+
+
+# 여기서 브런치이름 설정(allmerge)
 if [ ! -d /home/ec2-user/terraform-base-infra/.git ]; then
-  sudo -u ec2-user git clone https://github.com/vjzm444/terraform-base-infra.git /home/ec2-user/terraform-base-infra
+  sudo -u ec2-user git clone -b allmerge https://github.com/vjzm444/terraform-base-infra.git /home/ec2-user/terraform-base-infra
 else
   cd /home/ec2-user/terraform-base-infra
   sudo -u ec2-user git pull --ff-only || true
@@ -159,6 +162,7 @@ PUBLIC_SUBNET_2C_NAME=Public-Subnet-2c
 PRIVATE_SUBNET_2A_NAME=Private-Subnet-2a
 PRIVATE_SUBNET_2C_NAME=Private-Subnet-2c
 
+COGNITO_REGION=ap-northeast-2
 COGNITO_USER_POOL_ID=${aws_cognito_user_pool.vamserlike_user_pool.id}
 COGNITO_CLIENT_ID=${aws_cognito_user_pool_client.vamserlike_app_client.id}
 
