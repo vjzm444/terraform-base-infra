@@ -538,12 +538,6 @@ resource "aws_wafv2_web_acl" "backend" {
   tags = { Name = "Vamserlike-Backend-WAF" }
 }
 
-# ----- Web ACL을 ALB에 연결 -----
-resource "aws_wafv2_web_acl_association" "backend" {
-  resource_arn = aws_lb.alb.arn # 앞서 생성한 로드 밸런서(ALB)에 부착
-  web_acl_arn  = aws_wafv2_web_acl.backend.arn
-}
-
 # 테스트 툴(WAF_TARGET_URL)에 넣을 ALB 주소
 output "waf_target_url" {
   value       = "http://${aws_lb.alb.dns_name}" # 테스트 툴 환경변수에 바로 복붙할 수 있도록 터미널에 출력
