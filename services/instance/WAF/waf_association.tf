@@ -1,16 +1,16 @@
 # =========================================================
-# [버전 B] 향후 분리 구조 — instance/WAF 를 '독립 폴더(별도 state)'로 운영할 때
-# 부모가 없으므로 ALB ARN 을 직접 알아내야 한다.
-# → 이미 존재하는 ALB 를 '이름'으로 조회(data 소스)하여, 수동 입력(ARN 복붙) 없이 연결.
+# [버전 B / 독립 폴더] 여러 ALB 중 '현주님 ALB'만 골라 WAF 연결
+# WAF 가 별도 state 라 aws_lb.alb 를 직접 못 보므로, ARN 또는 이름으로 '기존' ALB 를 지정한다.
 #
-# 사용법:
-#  1) 이 파일을 instance/WAF/waf_association.tf 로 둔다(버전 A 연결 파일은 제거).
-#  2) waf.tf 안의 기존 aws_wafv2_web_acl_association 블록은 삭제(중복 방지).
-#  3) 부모의 waf_module_parent.tf(module "waf" 블록)는 더 이상 쓰지 않으므로 제거.
+# ▶ 둘 중 하나만 채운다(둘 다 비우면 의도적으로 실패 → 실수로 엉뚱한 ALB 연결 방지):
+#    - alb_arn  : 가장 확실(권장). 현주님 ALB ARN 을 그대로 지정.
+#    - alb_name : ARN 을 모를 때, 이름으로 조회(이름은 리전·계정 내 유일).
+# ▶ 임의 기본값(예: public-backend-alb = 기영님 것)을 그대로 쓰지 말 것. 기본값을 비워 둠.
 #
-# 배포 순서: instance 배포(ALB 생성) → 그 다음 이 WAF 폴더에서 단독 배포(기존 ALB 조회).
-# 주의: 이 폴더 안에 provider/terraform 블록이 이미 있다면 중복되지 않게 하나만 유지할 것.
-#       waf_alert.tf 도 함께 단독 배포한다면 required_providers 에 archive 를 추가.
+# 사용법: 같은 폴더에 terraform.tfvars 만들어 한 줄만 채우기. 예)
+#    alb_arn  = "arn:aws:elasticloadbalancing:ap-northeast-2:...:loadbalancer/app/현주ALB/xxxx"
+#  또는
+#    alb_name = "현주님-ALB-이름"
 # =========================================================
 
 terraform {
@@ -21,7 +21,7 @@ terraform {
     }
   }
 
-  # 별도 state 를 위해 자체 backend 를 구성하세요(예: S3). 예시:
+  # 별도 state 를 위해 자체 backend 구성(예: S3)
   # backend "s3" {
   #   bucket = "<your-tf-state-bucket>"
   #   key    = "waf/terraform.tfstate"
@@ -30,20 +30,39 @@ terraform {
 }
 
 provider "aws" {
-  region = "ap-northeast-2"
+  region = "ap-northeast-2" # WAF(REGIONAL)와 ALB 는 반드시 같은 리전
+}
+
+variable "alb_arn" {
+  type        = string
+  default     = ""
+  description = "현주님 ALB ARN(권장/가장 확실). 지정 시 이 값을 그대로 사용."
 }
 
 variable "alb_name" {
   type        = string
-  default     = "public-backend-alb" # 실제 ALB 이름으로 확인/수정
-  description = "연결할 기존 ALB 의 이름(자동 조회용)"
+  default     = ""
+  description = "alb_arn 이 비었을 때, 이 이름으로 ALB 조회(이름은 유일)."
 }
 
+# alb_arn 이 비어 있을 때만 이름으로 조회(count 분기)
 data "aws_lb" "alb" {
-  name = var.alb_name
+  count = var.alb_arn == "" ? 1 : 0
+  name  = var.alb_name
+}
+
+locals {
+  # 둘 다 비면 data 가 name="" 로 조회 실패 → 의도된 안전장치(엉뚱한 ALB 연결 차단)
+  alb_arn = var.alb_arn != "" ? var.alb_arn : data.aws_lb.alb[0].arn
 }
 
 resource "aws_wafv2_web_acl_association" "backend" {
-  resource_arn = data.aws_lb.alb.arn
+  resource_arn = local.alb_arn
   web_acl_arn  = aws_wafv2_web_acl.backend.arn
+}
+
+# apply 후 '어느 ALB 에 붙었는지' 즉시 확인용 출력
+output "waf_attached_alb_arn" {
+  value       = local.alb_arn
+  description = "WAF 가 연결된 ALB ARN(현주님 것이 맞는지 확인용)"
 }
