@@ -180,6 +180,31 @@ GRAFANA_RELEASE_NAME=vamserlike-monitoring
 GRAFANA_ADMIN_SECRET_NAME=vamserlike-grafana-admin
 
 BACKEND_LOG_GROUP_NAME=/ec2/vamserlike-backend
+
+# API Gateway / CORS / Cognito JWT Authorizer
+# 기본값 false: bootstrap 완료 후 수동으로 bash setup-api-gateway.sh 실행
+# true로 바꾸면 bootstrap-vamserlike.sh 마지막 단계에서 자동 실행
+API_GATEWAY_ENABLED=false
+API_GATEWAY_SCRIPT_PATH=
+
+# cleanup-vamserlike.sh 실행 시 setup-api-gateway.sh로 만든 HTTP API 삭제
+API_GATEWAY_CLEANUP_ENABLED=true
+
+API_GATEWAY_NAME=vamserlike-backend-http-api
+API_GATEWAY_RECREATE=true
+
+BACKEND_INGRESS_NAME=vamserlike-backend-ingress
+COGNITO_SECRET_NAME=vamserlike-cognito-secret
+
+# 테스트 중에는 * 로 둠.
+# 최종 Unity WebGL CloudFront 도메인 확정 후 아래처럼 제한:
+# API_GATEWAY_CORS_ALLOW_ORIGINS=https://xxxxx.cloudfront.net,https://game.example.com
+API_GATEWAY_CORS_ALLOW_ORIGINS=*
+API_GATEWAY_CORS_ALLOW_METHODS=GET,POST,PUT,DELETE,PATCH,OPTIONS
+API_GATEWAY_CORS_ALLOW_HEADERS=authorization,content-type,x-requested-with
+API_GATEWAY_CORS_EXPOSE_HEADERS=date
+API_GATEWAY_CORS_MAX_AGE=3600
+
 DELETE_CLOUDWATCH_LOG_GROUP=false
 DELETE_ECR_IMAGES=false
 CLEAN_LOCAL_DOCKER_IMAGES=true
@@ -200,6 +225,13 @@ cd /home/ec2-user/terraform-base-infra/services/instance
 bash scripts/cleanup-vamserlike.sh
 RUN_CLEANUP_EOF
 
+cat > /home/ec2-user/setup-api-gateway.sh <<'RUN_API_GATEWAY_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/ec2-user/terraform-base-infra/services/instance
+bash scripts/setup-api-gateway.sh
+RUN_API_GATEWAY_EOF
+
 cat > /home/ec2-user/show-vamserlike-env.sh <<'SHOW_ENV_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -218,25 +250,32 @@ Vamserlike K8s Manager EC2
 3. Deploy EKS, Argo CD, backend image build/push, and backend ALB:
    ./bootstrap-vamserlike.sh
 
-4. Cleanup Kubernetes/EKS resources:
+4. Create API Gateway, CORS, and Cognito JWT Authorizer:
+   ./setup-api-gateway.sh
+
+5. Cleanup API Gateway, Kubernetes/EKS resources:
    ./cleanup-vamserlike.sh
 README_EOF
 
 chmod +x /home/ec2-user/bootstrap-vamserlike.sh
 chmod +x /home/ec2-user/cleanup-vamserlike.sh
+chmod +x /home/ec2-user/setup-api-gateway.sh
 chmod +x /home/ec2-user/show-vamserlike-env.sh
 
 chown -R ec2-user:ec2-user /home/ec2-user/terraform-base-infra
-chown ec2-user:ec2-user /home/ec2-user/bootstrap-vamserlike.sh /home/ec2-user/cleanup-vamserlike.sh /home/ec2-user/show-vamserlike-env.sh /home/ec2-user/VAMSERLIKE_README.txt
+chown ec2-user:ec2-user /home/ec2-user/bootstrap-vamserlike.sh /home/ec2-user/cleanup-vamserlike.sh /home/ec2-user/setup-api-gateway.sh /home/ec2-user/show-vamserlike-env.sh /home/ec2-user/VAMSERLIKE_README.txt
 
 bash -n "$INSTANCE_DIR/scripts/bootstrap-vamserlike.sh" || true
+bash -n "$INSTANCE_DIR/scripts/setup-api-gateway.sh" || true
 bash -n "$INSTANCE_DIR/scripts/cleanup-vamserlike.sh" || true
 bash -n /home/ec2-user/bootstrap-vamserlike.sh
+bash -n /home/ec2-user/setup-api-gateway.sh
 bash -n /home/ec2-user/cleanup-vamserlike.sh
 
 echo "===== Vamserlike K8s Manager user_data completed ====="
 echo "./show-vamserlike-env.sh"
 echo "./bootstrap-vamserlike.sh"
+echo "./setup-api-gateway.sh"
 echo "./cleanup-vamserlike.sh"
 EOF
 
