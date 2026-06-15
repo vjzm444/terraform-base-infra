@@ -39,6 +39,12 @@ GRAFANA_SERVICE_NAME="${GRAFANA_RELEASE_NAME}-grafana"
 GRAFANA_ADMIN_SECRET_NAME="${GRAFANA_ADMIN_SECRET_NAME:-vamserlike-grafana-admin}"
 GRAFANA_LB=""
 
+# API Gateway / CORS / Cognito JWT Authorizer
+# 기본값 false: 처음 배포에서는 EKS/ALB 정상 확인 후 setup-api-gateway.sh를 수동 실행 권장
+# 자동까지 원하면 scripts/vamserlike.env에 API_GATEWAY_ENABLED=true 설정
+API_GATEWAY_ENABLED="${API_GATEWAY_ENABLED:-false}"
+API_GATEWAY_SCRIPT_PATH="${API_GATEWAY_SCRIPT_PATH:-${SCRIPT_DIR}/setup-api-gateway.sh}"
+
 echo "===== Vamserlike Bootstrap Start ====="
 echo "AWS_REGION=${AWS_REGION}"
 echo "CLUSTER_NAME=${CLUSTER_NAME}"
@@ -57,6 +63,8 @@ echo "MONITORING_ENABLED=${MONITORING_ENABLED}"
 echo "GRAFANA_RELEASE_NAME=${GRAFANA_RELEASE_NAME}"
 echo "GRAFANA_SERVICE_NAME=${GRAFANA_SERVICE_NAME}"
 echo "GRAFANA_ADMIN_SECRET_NAME=${GRAFANA_ADMIN_SECRET_NAME}"
+echo "API_GATEWAY_ENABLED=${API_GATEWAY_ENABLED}"
+echo "API_GATEWAY_SCRIPT_PATH=${API_GATEWAY_SCRIPT_PATH}"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -634,6 +642,40 @@ if [ "$HEALTH_OK" != "true" ]; then
   exit 1
 fi
 
+echo "===== Optional API Gateway Setup ====="
+API_GATEWAY_ENDPOINT=""
+
+if [ "${API_GATEWAY_ENABLED}" = "true" ]; then
+  if [ ! -f "${API_GATEWAY_SCRIPT_PATH}" ]; then
+    echo "[ERROR] API_GATEWAY_ENABLED=true but setup script not found: ${API_GATEWAY_SCRIPT_PATH}"
+    echo "Create scripts/setup-api-gateway.sh first or set API_GATEWAY_ENABLED=false."
+    exit 1
+  fi
+
+  chmod +x "${API_GATEWAY_SCRIPT_PATH}" || true
+
+  echo "Run API Gateway setup script: ${API_GATEWAY_SCRIPT_PATH}"
+  bash "${API_GATEWAY_SCRIPT_PATH}"
+
+  API_GATEWAY_NAME="${API_GATEWAY_NAME:-vamserlike-backend-http-api}"
+
+  API_GATEWAY_ID="$(aws apigatewayv2 get-apis     --region "${AWS_REGION}"     --query "Items[?Name=='${API_GATEWAY_NAME}'].ApiId | [0]"     --output text 2>/dev/null || true)"
+
+  if [ -n "${API_GATEWAY_ID}" ] && [ "${API_GATEWAY_ID}" != "None" ]; then
+    API_GATEWAY_ENDPOINT="$(aws apigatewayv2 get-api       --region "${AWS_REGION}"       --api-id "${API_GATEWAY_ID}"       --query 'ApiEndpoint'       --output text 2>/dev/null || true)"
+  fi
+
+  if [ -n "${API_GATEWAY_ENDPOINT}" ] && [ "${API_GATEWAY_ENDPOINT}" != "None" ]; then
+    echo "API Gateway Endpoint: ${API_GATEWAY_ENDPOINT}"
+  else
+    echo "[WARN] API Gateway endpoint could not be resolved. Check setup-api-gateway.sh output."
+  fi
+else
+  echo "API Gateway setup skipped. Set API_GATEWAY_ENABLED=true in vamserlike.env to enable it."
+  echo "Manual command after bootstrap:"
+  echo "bash ${API_GATEWAY_SCRIPT_PATH}"
+fi
+
 echo "===== Output ====="
 ARGOCD_PW="$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
 
@@ -649,6 +691,12 @@ echo "Backend ALB: http://${BACKEND_ALB}"
 echo "Backend Root: http://${BACKEND_ALB}/"
 echo "Backend Swagger: http://${BACKEND_ALB}/swagger"
 echo "Backend Health: http://${BACKEND_ALB}/api/health"
+
+if [ -n "${API_GATEWAY_ENDPOINT:-}" ] && [ "${API_GATEWAY_ENDPOINT:-}" != "None" ]; then
+  echo "API Gateway Endpoint: ${API_GATEWAY_ENDPOINT}"
+  echo "API Gateway Health: ${API_GATEWAY_ENDPOINT}/api/Health"
+  echo "API Gateway Swagger: ${API_GATEWAY_ENDPOINT}/swagger"
+fi
 
 if [ "${MONITORING_ENABLED}" = "true" ]; then
   echo "Grafana URL: http://${GRAFANA_LB}"
@@ -666,6 +714,8 @@ echo "kubectl get pods -n amazon-cloudwatch"
 echo "kubectl get pods -n monitoring"
 echo "kubectl get svc -n monitoring"
 echo "kubectl get secret vamserlike-cognito-secret -n vamserlike -o yaml"
+echo "bash ${API_GATEWAY_SCRIPT_PATH}"
+echo "aws apigatewayv2 get-apis --region ${AWS_REGION} --output table"
 echo "aws ecr describe-images --region ${AWS_REGION} --repository-name ${ECR_REPOSITORY} --output table"
 echo "aws logs describe-log-groups --region ${AWS_REGION} --log-group-name-prefix /ec2/vamserlike-backend"
 
