@@ -24,6 +24,11 @@ ECR_REPOSITORY="${ECR_REPOSITORY:-vamserlike-backend}"
 BACKEND_IMAGE_TAG="${BACKEND_IMAGE_TAG:-latest}"
 BACKEND_SOURCE_DIR="${BACKEND_SOURCE_DIR:-${HOME}/Vamserlike-backend}"
 
+# API Gateway
+# setup-api-gateway.sh로 생성한 HTTP API를 cleanup에서 삭제
+API_GATEWAY_CLEANUP_ENABLED="${API_GATEWAY_CLEANUP_ENABLED:-true}"
+API_GATEWAY_NAME="${API_GATEWAY_NAME:-vamserlike-backend-http-api}"
+
 # cleanup 기본 정책
 # ECR repository 자체는 Terraform destroy가 삭제함.
 # cleanup에서는 기본적으로 ECR 이미지는 보존.
@@ -64,6 +69,8 @@ echo "VPC_CIDR=${VPC_CIDR}"
 echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
 echo "BACKEND_IMAGE_TAG=${BACKEND_IMAGE_TAG}"
 echo "BACKEND_SOURCE_DIR=${BACKEND_SOURCE_DIR}"
+echo "API_GATEWAY_CLEANUP_ENABLED=${API_GATEWAY_CLEANUP_ENABLED}"
+echo "API_GATEWAY_NAME=${API_GATEWAY_NAME}"
 echo "DELETE_ECR_IMAGES=${DELETE_ECR_IMAGES}"
 echo "CLEAN_LOCAL_DOCKER_IMAGES=${CLEAN_LOCAL_DOCKER_IMAGES}"
 echo "CLEAN_BACKEND_SOURCE_DIR=${CLEAN_BACKEND_SOURCE_DIR}"
@@ -111,6 +118,42 @@ if [ -z "${VPC_ID}" ] || [ "${VPC_ID}" = "None" ]; then
 else
   echo "VPC_ID=${VPC_ID}"
 fi
+
+cleanup_api_gateway() {
+  echo "===== Cleanup API Gateway ====="
+
+  if [ "${API_GATEWAY_CLEANUP_ENABLED}" != "true" ]; then
+    echo "API_GATEWAY_CLEANUP_ENABLED=${API_GATEWAY_CLEANUP_ENABLED}. Skip API Gateway cleanup."
+    return 0
+  fi
+
+  if [ -z "${API_GATEWAY_NAME}" ]; then
+    echo "[WARN] API_GATEWAY_NAME is empty. Skip API Gateway cleanup."
+    return 0
+  fi
+
+  echo "Find API Gateway by name: ${API_GATEWAY_NAME}"
+
+  API_IDS="$(aws apigatewayv2 get-apis \
+    --region "${AWS_REGION}" \
+    --query "Items[?Name=='${API_GATEWAY_NAME}'].ApiId" \
+    --output text 2>/dev/null || true)"
+
+  if [ -z "${API_IDS}" ] || [ "${API_IDS}" = "None" ]; then
+    echo "No API Gateway found: ${API_GATEWAY_NAME}"
+    return 0
+  fi
+
+  for API_ID in ${API_IDS}; do
+    echo "Delete API Gateway: ${API_ID} (${API_GATEWAY_NAME})"
+
+    aws apigatewayv2 delete-api \
+      --region "${AWS_REGION}" \
+      --api-id "${API_ID}" || true
+  done
+
+  echo "API Gateway cleanup requested."
+}
 
 wait_for_load_balancers() {
   if [ -z "${VPC_ID}" ]; then
@@ -332,6 +375,8 @@ cleanup_ecr_images_optional() {
   done
 }
 
+cleanup_api_gateway
+
 if [ "$CLUSTER_EXISTS" = "true" ]; then
   echo "===== Update kubeconfig ====="
   aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}" || true
@@ -447,6 +492,12 @@ else
   echo "CloudWatch Log Group kept for evidence: ${BACKEND_LOG_GROUP_NAME}"
   echo "To delete it, set DELETE_CLOUDWATCH_LOG_GROUP=true in scripts/vamserlike.env and rerun cleanup."
 fi
+
+echo "===== Remaining API Gateway Check ====="
+aws apigatewayv2 get-apis \
+  --region "${AWS_REGION}" \
+  --query "Items[?Name=='${API_GATEWAY_NAME}'].[Name,ApiId,ApiEndpoint]" \
+  --output table || true
 
 echo "===== Remaining Load Balancers Check ====="
 if [ -n "${VPC_ID}" ]; then
