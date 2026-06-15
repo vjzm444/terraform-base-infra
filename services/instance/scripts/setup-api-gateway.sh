@@ -381,10 +381,32 @@ echo
 echo "===== Test Protected API Without Token ====="
 curl -i "${API_ENDPOINT}/api/players/me" || true
 
+UNITY_CONFIG_OUTPUT_FILE="${SCRIPT_DIR}/api-gateway-unity-config.json"
+
+cat > "${UNITY_CONFIG_OUTPUT_FILE}" <<EOF
+{
+    "DaminUrl": "${API_ENDPOINT}"
+}
+EOF
+
 echo
+echo "============================================================"
 echo "===== Vamserlike API Gateway Setup Done ====="
+echo "============================================================"
 echo "API_ID=${API_ID}"
 echo "API_ENDPOINT=${API_ENDPOINT}"
-echo ""
-echo "Unity WebGL API Base URL:"
-echo "${API_ENDPOINT}"
+echo
+echo "===== Unity WebGL config.json에 넣을 값 ====="
+cat "${UNITY_CONFIG_OUTPUT_FILE}"
+echo
+echo "저장된 파일:"
+echo "${UNITY_CONFIG_OUTPUT_FILE}"
+echo
+echo "로컬 Unity 프로젝트에서 수정할 파일:"
+echo "C:\\Vamserlike\\Vamserlike-unity\\StreamingAssets\\config.json"
+echo
+echo "config.json 내용을 아래처럼 변경 후 commit/push 하면 Unity 배포 파이프라인이 반영함:"
+echo
+cat "${UNITY_CONFIG_OUTPUT_FILE}"
+echo
+echo "============================================================"
