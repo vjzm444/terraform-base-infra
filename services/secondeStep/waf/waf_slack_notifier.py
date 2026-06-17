@@ -11,6 +11,7 @@ Vamserlike 백엔드 AWS WAF 차단 알림 Lambda (python3.12)
   - 형님의 Grafana 알림과 동일한 포맷(상태/알림명/설명/서비스/기준)
   - 규칙별 BlockedRequests 5분 합계는 GetMetricData 한 번으로 조회
   - 설정값은 waf_alert.tf 의 환경변수에서 읽음(없으면 기본값 사용)
+  - 푸터를 "CloudWatch · 대시보드 · <대시보드명>" 경로 형태로 표시(발생/정상 공통)
 
 진입 함수: handler  (waf_alert.tf 의 handler = "waf_slack_notifier.handler" 와 일치)
 """
@@ -28,6 +29,13 @@ WEB_ACL = os.environ.get("WEB_ACL_NAME", "vamserlike-backend-acl")
 REGION = os.environ.get("WAF_REGION", "ap-northeast-2")
 THRESHOLD = int(os.environ.get("WAF_BLOCK_THRESHOLD", "50"))
 WINDOW_MIN = int(os.environ.get("WINDOW_MINUTES", "5"))
+DASHBOARD_NAME = os.environ.get("WAF_DASHBOARD_NAME", "vamserlike-waf")
+
+# 메시지 하단 공통 푸터(상세 경로). 클릭 가능한 링크로 만들고 싶으면 아래 FOOTER 주석 참고.
+FOOTER = f"리전: {REGION} · CloudWatch · 대시보드 · {DASHBOARD_NAME}에서 상세 확인"
+# (선택) 대시보드로 바로 가는 링크로 표시하려면 위 FOOTER 대신 아래 두 줄을 사용:
+# _DASH_URL = f"https://{REGION}.console.aws.amazon.com/cloudwatch/home?region={REGION}#dashboards/dashboard/{DASHBOARD_NAME}"
+# FOOTER = f"리전: {REGION} · <{_DASH_URL}|CloudWatch · 대시보드 · {DASHBOARD_NAME}>에서 상세 확인"
 
 # Web ACL에 정의된 규칙들 (이 중 차단 건수 > 0 인 규칙만 메시지에 표시)
 RULES = [
@@ -140,7 +148,7 @@ def build_alarm_message() -> str:
         f"{lines}\n\n"
         f"*서비스:* Vamserlike Backend (Web ACL: {WEB_ACL})\n"
         f"*기준:* 최근 {WINDOW_MIN}분 차단 건수가 {THRESHOLD}건을 초과하면 알림 발생\n"
-        f"리전: {REGION} · CloudWatch에서 상세 확인"
+        f"{FOOTER}"
     )
 
 
@@ -153,7 +161,7 @@ def build_ok_message() -> str:
         f"임계치({THRESHOLD}건) 아래로 복구되었습니다.\n\n"
         f"*서비스:* Vamserlike Backend (Web ACL: {WEB_ACL})\n"
         f"*기준:* 최근 {WINDOW_MIN}분 차단 건수가 {THRESHOLD}건을 초과하면 알림 발생\n"
-        f"리전: {REGION}"
+        f"{FOOTER}"
     )
 
 
