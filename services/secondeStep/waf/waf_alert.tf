@@ -7,6 +7,11 @@
 # 사전 준비(1회): Slack Webhook URL 을 SSM SecureString 으로 저장 (비밀은 TF state 밖에 보관)
 #   aws ssm put-parameter --name "/vamserlike/waf/slack_webhook" --type SecureString \
 #     --value "https://hooks.slack.com/services/XXX/YYY/ZZZ" --region ap-northeast-2
+#
+# [변경 이력]
+#   - 알람 ok_actions 추가 → 차단 급증 종료 시 [정상] 복구 메시지도 발송
+#   - Lambda 환경변수에 WAF_BLOCK_THRESHOLD 추가 → 알림 본문의 "기준" 문구가
+#     알람 임계치와 항상 동기화됨
 # =========================================================
 
 variable "web_acl_name" {
@@ -98,6 +103,7 @@ resource "aws_lambda_function" "waf_notifier" {
       WAF_REGION          = var.waf_region
       SLACK_WEBHOOK_PARAM = var.slack_webhook_param
       WINDOW_MINUTES      = "5"
+      WAF_BLOCK_THRESHOLD = tostring(var.waf_block_threshold) # 알림 본문 "기준" 문구 동기화
     }
   }
 }
@@ -123,10 +129,10 @@ resource "aws_lambda_permission" "allow_sns" {
 
 # ---------- CloudWatch 알람 (BlockedRequests 5분 합계 >= 임계값) ----------
 resource "aws_cloudwatch_metric_alarm" "waf_block_spike" {
-  alarm_name          = "vamserlike-waf-block-spike"
-  alarm_description   = "WAF blocked requests spiked over threshold in 5 minutes"
-  namespace           = "AWS/WAFV2"
-  metric_name         = "BlockedRequests"
+  alarm_name        = "vamserlike-waf-block-spike"
+  alarm_description = "WAF blocked requests spiked over threshold in 5 minutes"
+  namespace         = "AWS/WAFV2"
+  metric_name       = "BlockedRequests"
   dimensions = {
     WebACL = var.web_acl_name
     Rule   = "ALL"
@@ -139,4 +145,5 @@ resource "aws_cloudwatch_metric_alarm" "waf_block_spike" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.waf_alerts.arn]
+  ok_actions          = [aws_sns_topic.waf_alerts.arn] # 추가: 차단 급증 종료 시 [정상] 복구 메시지
 }
